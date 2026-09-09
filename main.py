@@ -516,7 +516,7 @@ def scrape_exchange(config):
 
         page.wait_for_timeout(max(1000, wait_ms // 3))
 
-        no_data = page.evaluate("""() => {
+        no_data = page.evaluate(r"""() => {
             const body = document.body.innerText || '';
             return body.includes('No Data') && !/0\.\d{2,}/.test(body);
         }""")
@@ -643,6 +643,16 @@ def fmt_pct(v):
     return "—" if v is None else f"{v:+.2f}%"
 
 
+
+def smis_item_url(item):
+    """优先商品详情页，否则搜索页（看涨跌趋势）。"""
+    cid = item.get("commodity_id") or item.get("id")
+    if cid is not None and str(cid).isdigit():
+        return f"https://smis.club/commodity/{cid}"
+    name = item.get("name") or ""
+    return "https://smis.club/search?keyword=" + quote(name)
+
+
 def telegram_send(bot_token, chat_id, text):
     url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
     r = requests.post(
@@ -658,37 +668,50 @@ def telegram_send(bot_token, chat_id, text):
     r.raise_for_status()
 
 
-def discovery_message(item, unlock_at, sale_method):
-    return (
-        "🟢 <b>发现挂刀机会</b>\n\n"
-        f"<b>{item['name']}</b>\n"
-        f"7日跌幅：<b>{fmt_pct(item['change_7d'])}</b>\n"
-        f"挂刀比例：<b>{item['ratio']:.4f}</b>\n"
-        f"平台：{item['platform'] or '—'}\n"
-        f"平台价：{fmt_money(item['platform_price'])}\n"
-        f"Steam售价：{fmt_money(item['steam_price'])}\n"
-        f"到手余额：{fmt_money(item['steam_balance'])}\n"
-        f"成交量：{item['volume'] if item['volume'] is not None else '—'}\n\n"
-        f"策略：<b>{sale_method}</b>\n"
-        f"预计可卖时间：<b>{unlock_at.astimezone().strftime('%Y-%m-%d %H:%M')}</b>\n"
-        f"<a href=\"{item['steam_url']}\">打开 Steam 市场</a>"
-    )
+def discovery_batch_message(items, sale_method, hold_days):
+    """最多 10 条合并成一条 TG 消息。"""
+    lines = [
+        f"🟢 <b>挂刀机会 Top {len(items)}</b>",
+        f"策略: {sale_method} · 保护期约 {hold_days:g} 天",
+        "━━━━━━━━━━━━━━━━",
+    ]
+    for i, item in enumerate(items, 1):
+        url = smis_item_url(item)
+        name = item.get("name") or "?"
+        ratio = item.get("ratio")
+        ratio_s = f"{ratio:.4f}" if ratio is not None else "—"
+        ch_s = fmt_pct(item.get("change_7d"))
+        vol = item.get("volume")
+        vol_s = f"{vol:g}" if isinstance(vol, (int, float)) else "—"
+        plat = item.get("platform") or "—"
+        pp = fmt_money(item.get("platform_price"))
+        sb = fmt_money(item.get("steam_balance"))
+        lines.append(
+            f"<b>{i}. <a href=\"{url}\">{name}</a></b>\n"
+            f"   比例 <b>{ratio_s}</b> · 7日 <b>{ch_s}</b> · {plat}\n"
+            f"   平台价 {pp} → 到手 {sb} · 量 {vol_s}"
+        )
+    lines.append("━━━━━━━━━━━━━━━━")
+    lines.append('<a href="https://smis.club/exchange">打开挂刀行情</a>')
+    return "\n".join(lines)
 
 
 def mature_message(item, record, sale_method):
     ratio = item.get("ratio")
     ratio_text = f"{ratio:.4f}" if ratio is not None else "—"
+    url = smis_item_url(item if item.get("name") else record)
+    name = item.get("name", record.get("name"))
     return (
         "⏰ <b>7天保护期到期复核</b>\n\n"
-        f"<b>{item.get('name', record['name'])}</b>\n"
-        f"当前平台：{item.get('platform', record.get('platform', '—'))}\n"
+        f"<b><a href=\"{url}\">{name}</a></b>\n"
+        f"平台：{item.get('platform', record.get('platform', '—'))}\n"
         f"当前挂刀比例：<b>{ratio_text}</b>\n"
         f"当前7日涨跌：<b>{fmt_pct(item.get('change_7d'))}</b>\n"
         f"平台价：{fmt_money(item.get('platform_price'))}\n"
         f"Steam售价：{fmt_money(item.get('steam_price'))}\n"
         f"到手余额：{fmt_money(item.get('steam_balance'))}\n\n"
-        f"建议：按 <b>{sale_method}</b> 路径核对实时市场后出售。\n"
-        f"<a href=\"{item.get('steam_url', record.get('steam_url', ''))}\">打开 Steam 市场</a>"
+        f"建议：按 <b>{sale_method}</b> 核对后出售。\n"
+        f'<a href="https://smis.club/exchange">挂刀行情</a>'
     )
 
 
@@ -748,6 +771,7 @@ def run():
 
     changed = False
     new_count = 0
+    new_items = []
 
     for item in qualified:
         key = key_for(item)
@@ -756,20 +780,32 @@ def run():
             candidates[key] = {
                 "name": item["name"],
                 "platform": item["platform"],
-                "steam_url": item["steam_url"],
+                "steam_url": item.get("steam_url"),
+                "smis_url": smis_item_url(item),
                 "first_seen": now_utc().isoformat(),
                 "unlock_at": unlock.isoformat(),
                 "discovery_ratio": item["ratio"],
                 "discovery_change_7d": item["change_7d"],
                 "status": "waiting",
             }
-            try:
-                telegram_send(token, chat_id, discovery_message(item, unlock, sale_method))
-                print(f"[tg] 已推送新机会: {item['name']}")
-                new_count += 1
-            except Exception as e:
-                print(f"[error] Telegram 发送失败: {e}")
+            new_items.append(item)
             changed = True
+
+    # 本轮新发现合并推送，最多 10 条（qualified 已按比例排序）
+    batch = new_items[:10]
+    if batch:
+        try:
+            telegram_send(
+                token,
+                chat_id,
+                discovery_batch_message(batch, sale_method, hold_days),
+            )
+            new_count = len(batch)
+            print(f"[tg] 已合并推送 {new_count} 条新机会")
+            for it in batch:
+                print(f"  → {it['name']}")
+        except Exception as e:
+            print(f"[error] Telegram 发送失败: {e}")
 
     for key, record in list(candidates.items()):
         if record.get("status") != "waiting":
