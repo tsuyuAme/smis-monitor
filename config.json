@@ -8,10 +8,10 @@
     "sale_method": "Steam挂底价"
   },
   "filters": {
-    "ratio_max": 0.65,
-    "drop_min_pct": 5,
+    "ratio_max": 0.7,
+    "drop_min_pct": 3,
     "volume_min": 100,
-    "price_min": 2,
+    "price_min": 1,
     "price_max": 5000,
     "platforms": []
   },
