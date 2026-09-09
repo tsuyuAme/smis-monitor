@@ -263,6 +263,30 @@
       "discovery_ratio": 0.6488,
       "discovery_change_7d": -8.15,
       "status": "waiting"
+    },
+    "嘲讽：破链之舞::BUFF": {
+      "name": "嘲讽：破链之舞",
+      "platform": "BUFF",
+      "steam_url": "https://steamcommunity.com/market/search?appid=730&q=%E5%98%B2%E8%AE%BD%EF%BC%9A%E7%A0%B4%E9%93%BE%E4%B9%8B%E8%88%9E",
+      "smis_url": "https://smis.club/commodity/57327",
+      "commodity_id": 57327,
+      "first_seen": "2026-09-09T08:49:37.346213+00:00",
+      "unlock_at": "2026-09-16T08:49:37.346202+00:00",
+      "discovery_ratio": 0.6234,
+      "discovery_change_7d": -5.0,
+      "status": "waiting"
+    },
+    "MAC-10 | 鼠鼠我呀 (略有磨损)::BUFF": {
+      "name": "MAC-10 | 鼠鼠我呀 (略有磨损)",
+      "platform": "BUFF",
+      "steam_url": "https://steamcommunity.com/market/search?appid=730&q=MAC-10%20%7C%20%E9%BC%A0%E9%BC%A0%E6%88%91%E5%91%80%20%28%E7%95%A5%E6%9C%89%E7%A3%A8%E6%8D%9F%29",
+      "smis_url": "https://smis.club/commodity/62566",
+      "commodity_id": 62566,
+      "first_seen": "2026-09-09T08:49:37.346229+00:00",
+      "unlock_at": "2026-09-16T08:49:37.346226+00:00",
+      "discovery_ratio": 0.641,
+      "discovery_change_7d": -8.09,
+      "status": "waiting"
     }
   }
 }
