@@ -3,9 +3,8 @@ name: SMIS monitor
 on:
   workflow_dispatch:
   schedule:
-    # 每小时一次，错开整点（每小时第 18 分，UTC）
-    # 北京时间约为每小时 :18（UTC+8 即本地 :18 对应 UTC 前一小时 :18... 实际 UTC 18 分 = 北京 01:18, 02:18...）
-    - cron: "18 * * * *"
+    # 每小时一次，UTC 第 17 分（避开整点）
+    - cron: "17 * * * *"
 
 permissions:
   contents: write
@@ -17,7 +16,7 @@ concurrency:
 jobs:
   scan:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -43,6 +42,10 @@ jobs:
 
       - name: Commit state changes
         run: |
+          if [ ! -f data/state.json ]; then
+            echo "No state file."
+            exit 0
+          fi
           if git diff --quiet -- data/state.json 2>/dev/null; then
             echo "No state changes."
             exit 0

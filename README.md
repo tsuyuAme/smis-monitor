@@ -42,7 +42,6 @@ schedule:
 
 ### 注意
 
-- 若站点风控导致 Actions 长期 0 条，请改用本机方式  
 - `data/state.json` 变更会由 workflow 提交回仓库  
 
 
@@ -112,21 +111,6 @@ playwright install chromium
 | `main.py` | 主程序 |
 | `config.json` | 过滤与策略 |
 | `.github/workflows/monitor.yml` | Actions 工作流 |
-| `run_setup.bat` / `run.bat` | Windows 本机脚本 |
-| `browser_data/` | 本机浏览器数据（勿提交） |
 | `data/state.json` | 监控状态 |
 | `requirements.txt` | 依赖 |
 
-## 常见问题
-
-**Q: 有 qualified 但不推送？**  
-当前版本只要本轮有符合条件的商品，就会推 Top（最多 10 条）。请确认 Secrets 中 TG 配置正确，并查看 Actions 日志是否有 `[tg]` / 报错。
-
-**Q: 详情链接无效？**  
-需使用能解析接口字段 `id` 的 `main.py`，链接格式为 `https://smis.club/commodity/{id}`。
-
-**Q: 一直 0 条？**  
-看日志中的过滤条件与 `[skip]` 原因；适当放宽 `ratio_max`、降低 `volume_min`。接口 401 或页面 No Data 时用本机 `run_setup.bat`。
-
-**Q: 如何改频率？**  
-编辑 `.github/workflows/monitor.yml` 的 `cron`。不要设置过于频繁，以免触发配额或风控。
