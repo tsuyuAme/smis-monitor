@@ -88,131 +88,131 @@ def get_config():
 # 从 API JSON 解析（优先）
 # ---------------------------------------------------------------------------
 def items_from_api_payload(payload, _depth=0):
-    """尽量兼容多种返回结构，抽出商品列表。"""
+    """解析 smis /api/commodity/exchange 返回。"""
     if payload is None:
         return []
 
-    def looks_like_item(d):
-        if not isinstance(d, dict):
-            return False
-        keys = {str(k).lower() for k in d.keys()}
-        has_name = any(k in keys for k in (
-            "name", "commodityname", "goodsname", "itemname",
-            "market_hash_name", "markethashname", "commodity_name",
-        ))
-        has_ratio = any(k in keys for k in (
-            "ratio", "exchangeratio", "kniferatio", "rate", "exchange_ratio",
-        ))
-        # 或同时有平台价和 steam 相关价
-        has_prices = any("price" in k or "余额" in str(k) for k in keys)
-        return has_name or (has_ratio and has_prices) or (
-            has_name is False and has_ratio and len(keys) >= 5
-        )
+    candidates = []
+    if isinstance(payload, list):
+        candidates = payload
+    elif isinstance(payload, dict):
+        data = payload.get("data", payload)
+        if isinstance(data, list):
+            candidates = data
+        elif isinstance(data, dict):
+            for k in ("list", "records", "rows", "items", "result"):
+                if isinstance(data.get(k), list):
+                    candidates = data[k]
+                    break
+            if not candidates:
+                # 递归浅搜
+                for v in data.values():
+                    if isinstance(v, list) and v and isinstance(v[0], dict):
+                        candidates = v
+                        break
 
-    def walk(obj, depth=0):
-        if depth > 6:
-            return []
-        found = []
-        if isinstance(obj, list):
-            if obj and all(isinstance(x, dict) for x in obj[:3]):
-                # 整表都是商品
-                if looks_like_item(obj[0]) or any(
-                    k in {str(x).lower() for x in obj[0].keys()}
-                    for k in ("ratio", "name", "steamprice", "platformprice")
-                ):
-                    return list(obj)
-            for x in obj:
-                found.extend(walk(x, depth + 1))
-            return found
-        if isinstance(obj, dict):
-            if looks_like_item(obj) and depth > 0:
-                return [obj]
-            # 优先常见字段
-            for key in ("list", "records", "rows", "items", "result", "data", "content"):
-                if key in obj:
-                    found.extend(walk(obj[key], depth + 1))
-                    if found:
-                        return found
-            for v in obj.values():
-                if isinstance(v, (list, dict)):
-                    found.extend(walk(v, depth + 1))
-                    if found:
-                        return found
-        return found
-
-    candidates = walk(payload)
-
-    # 调试：没抽到时打印结构
-    if not candidates and _depth == 0 and isinstance(payload, dict):
+    if not candidates and isinstance(payload, dict):
         try:
-            preview = {k: (type(v).__name__ if not isinstance(v, (int, float, str, bool, type(None))) else v)
-                       for k, v in list(payload.items())[:12]}
-            print(f"[debug] API 顶层结构: {preview}")
-            data = payload.get("data")
-            if isinstance(data, dict):
-                print(f"[debug] data 键: {list(data.keys())[:20]}")
-            elif isinstance(data, list) and data:
-                print(f"[debug] data[0] 键: {list(data[0].keys()) if isinstance(data[0], dict) else type(data[0])}")
-        except Exception as e:
-            print(f"[debug] 打印结构失败: {e}")
+            preview = {k: type(v).__name__ for k, v in list(payload.items())[:8]}
+            print(f"[debug] API 结构无法识别: {preview}")
+        except Exception:
+            pass
+        return []
 
     out = []
     for it in candidates:
         if not isinstance(it, dict):
             continue
-        # 大小写不敏感取字段
-        lower_map = {str(k).lower(): v for k, v in it.items()}
+        lower = {str(k).lower(): v for k, v in it.items()}
 
         def g(*names):
             for n in names:
-                if n.lower() in lower_map and lower_map[n.lower()] is not None:
-                    return lower_map[n.lower()]
+                if n.lower() in lower and lower[n.lower()] is not None:
+                    return lower[n.lower()]
             return None
 
-        name = g("name", "commodityName", "goodsName", "itemName", "market_hash_name", "marketHashName", "commodity_name")
-        ratio = g("ratio", "exchangeRatio", "knifeRatio", "rate", "exchange_ratio")
-        change_7d = g("change7d", "change_7d", "weekChange", "sevenDayChange", "rise", "changePercent", "week_change")
-        volume = g("volume", "turnover", "dayVolume", "sellNum", "day_volume", "quantity")
-        steam_price = g("steamPrice", "steam_price", "steamSellPrice", "steam_sell_price")
-        platform_price = g("platformPrice", "platform_price", "sellPrice", "price")
-        steam_balance = g("steamBalance", "steam_balance", "toSteam", "to_steam", "steamBalancePrice")
-        platform = g("platform", "platformName", "from", "platform_name") or ""
-
-        if name is None:
+        # smis 字段：id / cnName / extremeRatio / platform / priceRatio7 / steamTransactionQuantity
+        cid = g("id", "commodityId", "commodity_id", "goodsId", "goodId")
+        name = g("cnName", "name", "commodityName", "goodsName", "hashName", "market_hash_name")
+        if not name:
             continue
-        if ratio is None and platform_price is not None and steam_balance is not None:
-            try:
-                ratio = float(platform_price) / float(steam_balance)
-            except Exception:
-                pass
+
+        platform = str(g("platform", "platformName") or "").upper()
+
+        # 挂刀比例：优先 extremeRatio，再按平台取 *ToSteamBySellRatio
+        ratio = g("extremeRatio", "ratio", "exchangeRatio")
+        if ratio is None and platform:
+            plat_key = {
+                "BUFF": "buffToSteamBySellRatio",
+                "UUYP": "uuypToSteamBySellRatio",
+                "C5": "c5ToSteamBySellRatio",
+                "IGXE": "igxeToSteamBySellRatio",
+                "ECO": "ecoToSteamBySellRatio",
+            }.get(platform)
+            if plat_key:
+                ratio = g(plat_key)
+
+        ratio = normalize_ratio(ratio)
         if ratio is None:
             continue
 
-        ratio = normalize_ratio(ratio)
-        if not isinstance(change_7d, (int, float)):
-            change_7d = parse_percent(change_7d)
-        else:
+        change_7d = g("priceRatio7", "change7d", "change_7d", "weekChange", "rise")
+        if isinstance(change_7d, (int, float)):
+            # smis 的 priceRatio7 可能是涨跌比例（如 -0.0609 或 -6.09）
             change_7d = float(change_7d)
+            if abs(change_7d) <= 1.5:
+                change_7d = change_7d * 100
+        else:
+            change_7d = parse_percent(change_7d)
+
+        volume = g("steamTransactionQuantity", "volume", "turnover", "dayVolume", "sellNum")
         if not isinstance(volume, (int, float)):
             volume = parse_number(volume)
+
+        steam_price = g("steamSellPrice", "steamPrice", "steam_price")
         if not isinstance(steam_price, (int, float)):
             steam_price = parse_number(steam_price)
+
+        # 平台售价：按 platform 取对应 sellPrice
+        platform_price = None
+        if platform:
+            pk = {
+                "BUFF": "buffSellPrice",
+                "UUYP": "uuypSellPrice",
+                "C5": "c5SellPrice",
+                "IGXE": "igxeSellPrice",
+                "ECO": "ecoSellPrice",
+            }.get(platform)
+            if pk:
+                platform_price = g(pk)
+        if platform_price is None:
+            platform_price = g("platformPrice", "platform_price", "sellPrice")
         if not isinstance(platform_price, (int, float)):
             platform_price = parse_number(platform_price)
+
+        # 到手 Steam 余额约 = 平台价 / 比例
+        steam_balance = g("steamBalance", "steam_balance", "toSteam")
+        if steam_balance is None and platform_price and ratio and ratio > 0:
+            try:
+                steam_balance = float(platform_price) / float(ratio)
+            except Exception:
+                steam_balance = None
         if not isinstance(steam_balance, (int, float)):
             steam_balance = parse_number(steam_balance)
 
         out.append({
             "name": str(name).strip(),
+            "commodity_id": cid,
             "change_7d": change_7d,
             "volume": volume,
             "steam_price": steam_price,
             "platform_price": platform_price,
             "steam_balance": steam_balance,
             "ratio": ratio,
-            "platform": str(platform),
+            "platform": platform,
             "steam_url": "https://steamcommunity.com/market/search?appid=730&q=" + quote(str(name)),
-            "updated": str(g("updateTime", "updated", "update_time") or ""),
+            "smis_url": f"https://smis.club/commodity/{cid}" if cid is not None else None,
+            "updated": str(g("updateTime", "updated") or ""),
             "scraped_at": now_utc().isoformat(),
         })
     return out
@@ -645,12 +645,15 @@ def fmt_pct(v):
 
 
 def smis_item_url(item):
-    """优先商品详情页，否则搜索页（看涨跌趋势）。"""
+    """详情页 https://smis.club/commodity/{id}"""
+    if item.get("smis_url"):
+        return item["smis_url"]
     cid = item.get("commodity_id") or item.get("id")
-    if cid is not None and str(cid).isdigit():
+    if cid is not None and str(cid).strip() != "":
         return f"https://smis.club/commodity/{cid}"
-    name = item.get("name") or ""
-    return "https://smis.club/search?keyword=" + quote(name)
+    # 无 id 时退回挂刀列表页
+    return "https://smis.club/exchange"
+
 
 
 def telegram_send(bot_token, chat_id, text):
