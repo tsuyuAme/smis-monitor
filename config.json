@@ -1,0 +1,21 @@
+{
+  "site": {
+    "url": "https://smis.club/exchange",
+    "wait_ms": 5000
+  },
+  "strategy": {
+    "hold_days": 7,
+    "sale_method": "Steam挂底价"
+  },
+  "filters": {
+    "ratio_max": 0.65,
+    "drop_min_pct": 5,
+    "volume_min": 50,
+    "price_min": null,
+    "price_max": null,
+    "platforms": []
+  },
+  "state": {
+    "max_records": 3000
+  }
+}
