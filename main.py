@@ -2,16 +2,22 @@
 """
 SMIS 挂刀监控
 - 打开 smis.club/exchange
-- 主动设置筛选条件并点击「应用设置」
-- 抓取表格，按挂刀比例 / 7日跌幅 / 成交量过滤
+- 拦截 API 数据 + 解析表格（双通道）
+- 按挂刀比例 / 7日跌幅 / 成交量过滤
 - 新发现发 Telegram，7 天后复核提醒
+
+本地调试（Windows PowerShell）:
+  $env:TG_BOT_TOKEN = "xxx"
+  $env:TG_CHAT_ID = "xxx"
+  $env:SMIS_HEADED = "1"          # 弹出浏览器窗口
+  $env:SMIS_MANUAL_WAIT = "60"    # 有验证码时给你 60 秒手动点
+  python main.py
 """
 
 import json
 import os
 import re
 import sys
-import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import quote
@@ -22,6 +28,8 @@ from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeo
 BASE_DIR = Path(__file__).resolve().parent
 DATA_FILE = BASE_DIR / "data" / "state.json"
 CONFIG_FILE = BASE_DIR / "config.json"
+DEBUG_DIR = BASE_DIR / "data" / "debug"
+BROWSER_DIR = BASE_DIR / "browser_data"
 UTC = timezone.utc
 
 
@@ -53,7 +61,6 @@ def normalize_ratio(text):
     v = parse_number(text)
     if v is None:
         return None
-    # 支持 0.68 或 68% 两种写法
     return v / 100 if v > 1.5 else v
 
 
@@ -77,267 +84,97 @@ def get_config():
     return cfg
 
 
-def set_input_value(page, selector, value):
-    """更可靠地设置 input 值（兼容受控组件）"""
-    el = page.locator(selector).first
-    el.wait_for(state="visible", timeout=10000)
-    el.click()
-    el.fill("")
-    el.fill(str(value))
-    # 触发 change / input 事件
-    page.evaluate(
-        """(sel) => {
-            const el = document.querySelector(sel);
-            if (el) {
-                el.dispatchEvent(new Event('input', { bubbles: true }));
-                el.dispatchEvent(new Event('change', { bubbles: true }));
-            }
-        }""",
-        selector,
-    )
+# ---------------------------------------------------------------------------
+# 从 API JSON 解析（优先）
+# ---------------------------------------------------------------------------
+def items_from_api_payload(payload):
+    """尽量兼容多种返回结构，抽出商品列表。"""
+    if payload is None:
+        return []
 
+    candidates = []
+    if isinstance(payload, list):
+        candidates = payload
+    elif isinstance(payload, dict):
+        for key in ("data", "list", "records", "rows", "result", "items"):
+            val = payload.get(key)
+            if isinstance(val, list) and val:
+                candidates = val
+                break
+            if isinstance(val, dict):
+                for k2 in ("list", "records", "rows", "items"):
+                    if isinstance(val.get(k2), list) and val[k2]:
+                        candidates = val[k2]
+                        break
+                if candidates:
+                    break
+        if not candidates and any(k in payload for k in ("name", "ratio", "commodityName")):
+            candidates = [payload]
 
-def scrape_exchange(config):
-    url = config.get("site", {}).get("url", "https://smis.club/exchange")
-    wait_ms = int(config.get("site", {}).get("wait_ms", 8000))
-    filters = config.get("filters", {})
-
-    price_min = filters.get("price_min", 1)
-    price_max = filters.get("price_max", 5000)
-    page_volume = max(10, min(int(filters.get("volume_min", 50)), 50))
-
-    with sync_playwright() as p:
-        browser = p.chromium.launch(
-            headless=True,
-            args=["--disable-blink-features=AutomationControlled", "--no-sandbox"],
+    out = []
+    for it in candidates:
+        if not isinstance(it, dict):
+            continue
+        # 字段名尽量兼容
+        name = (
+            it.get("name")
+            or it.get("commodityName")
+            or it.get("goodsName")
+            or it.get("itemName")
+            or it.get("market_hash_name")
+            or it.get("marketHashName")
         )
-        context = browser.new_context(
-            viewport={"width": 1600, "height": 1400},
-            locale="zh-CN",
-            user_agent=(
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/122.0.0.0 Safari/537.36"
-            ),
-        )
-        page = context.new_page()
-
-        print(f"[info] 打开 {url}")
-        page.goto(url, wait_until="domcontentloaded", timeout=90000)
-
-        try:
-            page.wait_for_load_state("networkidle", timeout=25000)
-        except PlaywrightTimeoutError:
-            pass
-
-        page.wait_for_timeout(2500)
-
-        # 关闭可能的弹窗
-        for sel in [
-            "button:has-text('关闭')",
-            "text=关闭",
-            ".aliyun-captcha-close",
-        ]:
+        ratio = it.get("ratio") or it.get("exchangeRatio") or it.get("knifeRatio") or it.get("rate")
+        if ratio is None and it.get("platformPrice") and it.get("steamBalance"):
             try:
-                loc = page.locator(sel)
-                if loc.count() > 0 and loc.first.is_visible():
-                    loc.first.click(timeout=1500)
+                ratio = float(it["platformPrice"]) / float(it["steamBalance"])
             except Exception:
                 pass
 
-        # ---------- 设置筛选（只动 text/number，绝不碰 radio） ----------
-        print(f"[info] 设置筛选: 价格 {price_min}~{price_max}, 成交量>={page_volume}")
-
-        try:
-            # Element UI / 常见：价格区间附近的两个可输入框
-            filled = page.evaluate(
-                """([minV, maxV, volV]) => {
-                    const isFillable = (el) => {
-                        if (!el || el.disabled || el.readOnly) return false;
-                        const t = (el.type || '').toLowerCase();
-                        if (t === 'radio' || t === 'checkbox' || t === 'hidden' || t === 'button') return false;
-                        return t === 'text' || t === 'number' || t === '' || t === 'search';
-                    };
-                    // 找「价格区间」附近的 input
-                    let priceInputs = [];
-                    const labels = Array.from(document.querySelectorAll('div, span, label'));
-                    for (const lab of labels) {
-                        const txt = (lab.textContent || '').trim();
-                        if (txt.includes('价格区间') || txt === '价格') {
-                            const box = lab.closest('div') || lab.parentElement;
-                            if (box) {
-                                const ins = Array.from(box.querySelectorAll('input')).filter(isFillable);
-                                if (ins.length >= 2) { priceInputs = ins; break; }
-                            }
-                        }
-                    }
-                    if (priceInputs.length < 2) {
-                        priceInputs = Array.from(document.querySelectorAll('input')).filter(isFillable);
-                    }
-                    if (priceInputs.length >= 2) {
-                        const setVal = (el, v) => {
-                            el.focus();
-                            el.value = String(v);
-                            el.dispatchEvent(new Event('input', { bubbles: true }));
-                            el.dispatchEvent(new Event('change', { bubbles: true }));
-                        };
-                        setVal(priceInputs[0], minV);
-                        setVal(priceInputs[1], maxV);
-                    }
-                    // 成交量
-                    let volInput = null;
-                    for (const lab of labels) {
-                        const txt = (lab.textContent || '').trim();
-                        if (txt.includes('日成交量') || txt.includes('成交量')) {
-                            const box = lab.closest('div') || lab.parentElement;
-                            if (box) {
-                                const ins = Array.from(box.querySelectorAll('input')).filter(isFillable);
-                                if (ins.length) { volInput = ins[0]; break; }
-                            }
-                        }
-                    }
-                    if (!volInput && priceInputs.length >= 3) volInput = priceInputs[2];
-                    if (volInput) {
-                        volInput.focus();
-                        volInput.value = String(volV);
-                        volInput.dispatchEvent(new Event('input', { bubbles: true }));
-                        volInput.dispatchEvent(new Event('change', { bubbles: true }));
-                    }
-                    return { priceCount: priceInputs.length, hasVol: !!volInput };
-                }""",
-                [price_min, price_max, page_volume],
-            )
-            print(f"[info] 输入框设置结果: {filled}")
-        except Exception as e:
-            print(f"[warn] 设置筛选失败: {e}")
-
-        page.wait_for_timeout(600)
-
-        # 点击「应用设置」
-        applied = False
-        for text in ["应用设置", "应用"]:
-            btn = page.locator(f"button:has-text('{text}')")
-            if btn.count() > 0:
-                try:
-                    btn.first.click(timeout=3000)
-                    applied = True
-                    print(f"[info] 已点击「{text}」")
-                    break
-                except Exception:
-                    continue
-        if not applied:
-            print("[warn] 未找到应用按钮，继续抓取")
-
-        # 等待数据
-        print("[info] 等待表格数据...")
-        for attempt in range(15):
-            page.wait_for_timeout(1200)
-            # 多种选择器探测是否有数据
-            ready = page.evaluate(
-                """() => {
-                    const bad = (t) => !t || t.includes('No Data') || t.trim().length < 3;
-                    // 标准 tr
-                    const trs = Array.from(document.querySelectorAll('table tbody tr, .el-table__body tr, .el-table__row'));
-                    for (const tr of trs) {
-                        const t = (tr.innerText || '').trim();
-                        if (!bad(t) && t.length > 10) return true;
-                    }
-                    // 任意带数字和比例样式的行
-                    const divs = Array.from(document.querySelectorAll('[class*="row"], [class*="table"] tr'));
-                    let hit = 0;
-                    for (const d of divs) {
-                        const t = (d.innerText || '');
-                        if (/0\\.\\d{2,4}/.test(t) && /¥|￥|\\d+%/.test(t)) hit++;
-                    }
-                    return hit >= 3;
-                }"""
-            )
-            if ready:
-                print(f"[info] 检测到数据 (attempt {attempt + 1})")
-                break
-            if attempt % 3 == 2:
-                print(f"[info] 等待中... ({attempt + 1}/15)")
-                try:
-                    page.locator("button:has-text('应用设置')").first.click(timeout=1500)
-                except Exception:
-                    pass
-
-        page.wait_for_timeout(max(1500, wait_ms // 3))
-
-        # ---------- 用 JS 统一抽表头 + 行（兼容 Element UI 虚拟表 / 双表结构） ----------
-        extracted = page.evaluate(
-            """() => {
-                const clean = (s) => (s || '').replace(/\\s+/g, ' ').trim();
-
-                // 1) 找表头
-                let headers = [];
-                const ths = document.querySelectorAll(
-                    'table thead th, .el-table__header th, .el-table__header-wrapper th'
-                );
-                if (ths.length) {
-                    headers = Array.from(ths).map(th => clean(th.innerText));
-                }
-                // 去重连续空头
-                headers = headers.filter((h, i, arr) => h || (i > 0 && arr[i-1]));
-
-                // 2) 找数据行：优先 tbody / el-table body
-                const rowSelectors = [
-                    'table tbody tr',
-                    '.el-table__body-wrapper tbody tr',
-                    '.el-table__body tr',
-                    '.el-table__row',
-                    'table tr',
-                ];
-                let rows = [];
-                for (const sel of rowSelectors) {
-                    const els = Array.from(document.querySelectorAll(sel));
-                    const good = [];
-                    for (const el of els) {
-                        // 跳过表头行
-                        if (el.querySelector('th')) continue;
-                        const cells = Array.from(el.querySelectorAll('td, .el-table__cell, [class*="cell"]'));
-                        let texts;
-                        if (cells.length >= 4) {
-                            texts = cells.map(c => clean(c.innerText));
-                        } else {
-                            texts = clean(el.innerText).split('\\n').map(clean).filter(Boolean);
-                        }
-                        const joined = texts.join(' ');
-                        if (!joined || joined.includes('No Data') || joined.length < 8) continue;
-                        // 至少要有数字
-                        if (!/\\d/.test(joined)) continue;
-                        good.push(texts);
-                    }
-                    if (good.length >= 3) {
-                        rows = good;
-                        break;
-                    }
-                    if (good.length > rows.length) rows = good;
-                }
-
-                return { headers, rows, rowCount: rows.length };
-            }"""
+        change_7d = (
+            it.get("change7d")
+            or it.get("change_7d")
+            or it.get("weekChange")
+            or it.get("sevenDayChange")
+            or it.get("rise")
         )
+        volume = it.get("volume") or it.get("turnover") or it.get("dayVolume") or it.get("sellNum")
+        steam_price = it.get("steamPrice") or it.get("steam_price") or it.get("steamSellPrice")
+        platform_price = it.get("platformPrice") or it.get("platform_price") or it.get("sellPrice")
+        steam_balance = it.get("steamBalance") or it.get("steam_balance") or it.get("toSteam")
+        platform = it.get("platform") or it.get("platformName") or it.get("from") or ""
 
-        browser.close()
+        if name is None or ratio is None:
+            continue
 
-    headers = extracted.get("headers") or []
-    raw_rows = extracted.get("rows") or []
-    print(f"[info] 表头: {headers}")
-    print(f"[info] 原始行数: {extracted.get('rowCount', 0)}")
+        ratio = normalize_ratio(ratio)
+        change_7d = parse_percent(change_7d) if not isinstance(change_7d, (int, float)) else float(change_7d)
+        volume = parse_number(volume) if not isinstance(volume, (int, float)) else float(volume)
+        steam_price = parse_number(steam_price) if not isinstance(steam_price, (int, float)) else float(steam_price)
+        platform_price = parse_number(platform_price) if not isinstance(platform_price, (int, float)) else float(platform_price)
+        steam_balance = parse_number(steam_balance) if not isinstance(steam_balance, (int, float)) else float(steam_balance)
 
-    if not raw_rows:
-        print("[warn] 未解析到任何数据行，可能页面仍是 No Data 或结构变化")
-        return []
+        out.append(
+            {
+                "name": str(name).strip(),
+                "change_7d": change_7d,
+                "volume": volume,
+                "steam_price": steam_price,
+                "platform_price": platform_price,
+                "steam_balance": steam_balance,
+                "ratio": ratio,
+                "platform": str(platform),
+                "steam_url": "https://steamcommunity.com/market/search?appid=730&q=" + quote(str(name)),
+                "updated": str(it.get("updateTime") or it.get("updated") or ""),
+                "scraped_at": now_utc().isoformat(),
+            }
+        )
+    return out
 
-    # 转成 parse_rows 需要的格式
-    results = []
-    for cells in raw_rows:
-        results.append({"headers": headers, "cells": cells})
-    return parse_rows(results)
 
-
-
+# ---------------------------------------------------------------------------
+# 从 DOM 表格解析（备用）
+# ---------------------------------------------------------------------------
 def parse_rows(raw_rows):
     out = []
     for row in raw_rows:
@@ -358,11 +195,8 @@ def parse_rows(raw_rows):
                     return v
             return None
 
-        # 按表头取；取不到则按常见列顺序兜底
-        # 常见顺序: 排行, 名称, 七日涨跌, 成交量, Steam售价, 平台售价, 到手余额, 挂刀比例, 平台, ...
         name = col("饰品名称", "商品", "名称")
         if not name:
-            # 找第一个不含纯数字/百分比的较长文本
             for c in cells:
                 t = re.sub(r"\s+", " ", str(c)).strip()
                 if len(t) >= 2 and not re.fullmatch(r"[\d.%+\-¥￥,\s]+", t) and t not in {"刚刚", "Steam"}:
@@ -378,23 +212,15 @@ def parse_rows(raw_rows):
         steam_balance = parse_number(col("到手Steam余额", "Steam余额", "到手余额"))
         ratio = normalize_ratio(col("挂刀比例", "比例"))
         platform = col("交易平台") or ""
-        # 「平台」单独匹配时容易和「平台售价」冲突，上面已优先用更长关键词
-        if not platform:
-            for h, v in data.items():
-                if h == "交易平台" or (h == "平台"):
-                    platform = v
-                    break
         market_link = col("Steam市场") or ""
         updated = col("更新时间") or ""
 
-        # 若表头匹配失败，尝试从 cells 里用正则抠挂刀比例 (0.6x ~ 0.9x)
         if ratio is None:
             for c in cells:
                 m = re.search(r"\b0\.\d{2,4}\b", str(c))
                 if m:
                     ratio = float(m.group())
                     break
-
         if change_7d is None:
             for c in cells:
                 m = re.search(r"([+\-]?\d+(?:\.\d+)?)\s*%", str(c))
@@ -429,6 +255,236 @@ def parse_rows(raw_rows):
     return out
 
 
+def scrape_exchange(config):
+    url = config.get("site", {}).get("url", "https://smis.club/exchange")
+    wait_ms = int(config.get("site", {}).get("wait_ms", 8000))
+    filters = config.get("filters", {})
+
+    price_min = filters.get("price_min", 1)
+    price_max = filters.get("price_max", 5000)
+    page_volume = max(10, min(int(filters.get("volume_min", 50)), 50))
+
+    setup_mode = os.getenv("SMIS_SETUP", "").strip() in {"1", "true", "True", "yes", "YES"}
+    headed_env = os.getenv("SMIS_HEADED", "").strip() in {"1", "true", "True", "yes", "YES"}
+    headed = setup_mode or headed_env
+    manual_wait = int(os.getenv("SMIS_MANUAL_WAIT", "0") or "0")
+    if setup_mode and manual_wait <= 0:
+        manual_wait = 90
+
+    api_payloads = []
+
+    with sync_playwright() as p:
+        BROWSER_DIR.mkdir(parents=True, exist_ok=True)
+        context = p.chromium.launch_persistent_context(
+            user_data_dir=str(BROWSER_DIR),
+            headless=not headed,
+            viewport={"width": 1600, "height": 1400},
+            locale="zh-CN",
+            timezone_id="Asia/Shanghai",
+            args=["--disable-blink-features=AutomationControlled"],
+            user_agent=(
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/122.0.0.0 Safari/537.36"
+            ),
+        )
+        page = context.pages[0] if context.pages else context.new_page()
+
+        def on_response(resp):
+            try:
+                u = resp.url or ""
+                if "exchange" in u and ("/api/" in u or "commodity" in u):
+                    if resp.status == 200:
+                        try:
+                            data = resp.json()
+                            api_payloads.append(data)
+                            keys = list(data.keys()) if isinstance(data, dict) else type(data).__name__
+                            print(f"[info] 拦截接口 {resp.status}: {u[:90]}  keys={keys}")
+                        except Exception:
+                            txt = resp.text()[:200]
+                            print(f"[info] 接口非 JSON: {u[:60]} -> {txt}")
+                    else:
+                        print(f"[warn] 接口状态 {resp.status}: {u[:90]}")
+            except Exception:
+                pass
+
+        page.on("response", on_response)
+
+        print(f"[info] 打开 {url}  (headed={headed}, manual_wait={manual_wait}s)")
+        page.goto(url, wait_until="domcontentloaded", timeout=90000)
+
+        try:
+            page.wait_for_load_state("networkidle", timeout=20000)
+        except PlaywrightTimeoutError:
+            pass
+        page.wait_for_timeout(2000)
+
+        if manual_wait > 0:
+            print(f"[info] 请在弹出的浏览器里完成验证码（如有），等待 {manual_wait} 秒...")
+            print("[info] 看到表格有数据后，程序会自动继续；也可等倒计时结束")
+            page.wait_for_timeout(manual_wait * 1000)
+
+        # 设置筛选
+        print(f"[info] 设置筛选: 价格 {price_min}~{price_max}, 成交量>={page_volume}")
+        try:
+            filled = page.evaluate(
+                """([minV, maxV, volV]) => {
+                    const isFillable = (el) => {
+                        if (!el || el.disabled || el.readOnly) return false;
+                        const t = (el.type || '').toLowerCase();
+                        if (['radio','checkbox','hidden','button','submit'].includes(t)) return false;
+                        return true;
+                    };
+                    let priceInputs = [];
+                    const labels = Array.from(document.querySelectorAll('div, span, label'));
+                    for (const lab of labels) {
+                        const txt = (lab.textContent || '').trim();
+                        if (txt.includes('价格区间') || txt === '价格') {
+                            const box = lab.closest('div') || lab.parentElement;
+                            if (box) {
+                                const ins = Array.from(box.querySelectorAll('input')).filter(isFillable);
+                                if (ins.length >= 2) { priceInputs = ins; break; }
+                            }
+                        }
+                    }
+                    if (priceInputs.length < 2)
+                        priceInputs = Array.from(document.querySelectorAll('input')).filter(isFillable);
+                    const setVal = (el, v) => {
+                        el.focus(); el.value = String(v);
+                        el.dispatchEvent(new Event('input', { bubbles: true }));
+                        el.dispatchEvent(new Event('change', { bubbles: true }));
+                    };
+                    if (priceInputs.length >= 2) {
+                        setVal(priceInputs[0], minV);
+                        setVal(priceInputs[1], maxV);
+                    }
+                    let volInput = null;
+                    for (const lab of labels) {
+                        const txt = (lab.textContent || '').trim();
+                        if (txt.includes('日成交量') || txt.includes('成交量')) {
+                            const box = lab.closest('div') || lab.parentElement;
+                            if (box) {
+                                const ins = Array.from(box.querySelectorAll('input')).filter(isFillable);
+                                if (ins.length) { volInput = ins[0]; break; }
+                            }
+                        }
+                    }
+                    if (!volInput && priceInputs.length >= 3) volInput = priceInputs[2];
+                    if (volInput) setVal(volInput, volV);
+                    return { priceCount: priceInputs.length, hasVol: !!volInput };
+                }""",
+                [price_min, price_max, page_volume],
+            )
+            print(f"[info] 输入框设置结果: {filled}")
+        except Exception as e:
+            print(f"[warn] 设置筛选失败: {e}")
+
+        page.wait_for_timeout(500)
+
+        for text in ["应用设置", "应用"]:
+            btn = page.locator(f"button:has-text('{text}')")
+            if btn.count() > 0:
+                try:
+                    btn.first.click(timeout=3000)
+                    print(f"[info] 已点击「{text}」")
+                    break
+                except Exception:
+                    continue
+
+        print("[info] 等待数据...")
+        for attempt in range(20):
+            page.wait_for_timeout(1000)
+            if api_payloads:
+                print(f"[info] 已拦截到 {len(api_payloads)} 个接口响应")
+                break
+            ready = page.evaluate(
+                """() => {
+                    const trs = document.querySelectorAll('table tbody tr, .el-table__body tr, .el-table__row');
+                    for (const tr of trs) {
+                        const t = (tr.innerText || '').trim();
+                        if (t && !t.includes('No Data') && t.length > 15 && /\\d/.test(t)) return true;
+                    }
+                    return false;
+                }"""
+            )
+            if ready:
+                print(f"[info] DOM 检测到数据行 (attempt {attempt+1})")
+                break
+            if attempt in (5, 10, 15):
+                print(f"[info] 等待中... ({attempt+1}/20)  若有验证码请在窗口中完成")
+                try:
+                    page.locator("button:has-text('应用设置')").first.click(timeout=1000)
+                except Exception:
+                    pass
+
+        page.wait_for_timeout(max(1000, wait_ms // 3))
+
+        # 优先用 API 数据
+        items = []
+        for payload in api_payloads:
+            items.extend(items_from_api_payload(payload))
+        if items:
+            print(f"[info] 从 API 解析到 {len(items)} 条")
+            context.close()
+            return items
+
+        # 退回 DOM
+        extracted = page.evaluate(
+            """() => {
+                const clean = (s) => (s || '').replace(/\\s+/g, ' ').trim();
+                let headers = [];
+                const ths = document.querySelectorAll('table thead th, .el-table__header th');
+                if (ths.length) headers = Array.from(ths).map(th => clean(th.innerText));
+                const rowSelectors = [
+                    'table tbody tr', '.el-table__body-wrapper tbody tr',
+                    '.el-table__body tr', '.el-table__row', 'table tr'
+                ];
+                let rows = [];
+                for (const sel of rowSelectors) {
+                    const good = [];
+                    for (const el of document.querySelectorAll(sel)) {
+                        if (el.querySelector('th')) continue;
+                        const cells = Array.from(el.querySelectorAll('td, .el-table__cell'));
+                        let texts = cells.length >= 4
+                            ? cells.map(c => clean(c.innerText))
+                            : clean(el.innerText).split('\\n').map(clean).filter(Boolean);
+                        const joined = texts.join(' ');
+                        if (!joined || joined.includes('No Data') || joined.length < 8 || !/\\d/.test(joined))
+                            continue;
+                        good.push(texts);
+                    }
+                    if (good.length >= 3) { rows = good; break; }
+                    if (good.length > rows.length) rows = good;
+                }
+                return { headers, rows, rowCount: rows.length };
+            }"""
+        )
+
+        # 调试：保存页面快照
+        if not extracted.get("rowCount"):
+            try:
+                DEBUG_DIR.mkdir(parents=True, exist_ok=True)
+                snap = DEBUG_DIR / "last_page.html"
+                snap.write_text(page.content(), "utf-8")
+                page.screenshot(path=str(DEBUG_DIR / "last_page.png"), full_page=True)
+                print(f"[warn] 无数据，已保存调试文件到 {DEBUG_DIR}")
+            except Exception as e:
+                print(f"[warn] 保存调试文件失败: {e}")
+
+        context.close()
+
+    headers = extracted.get("headers") or []
+    raw_rows = extracted.get("rows") or []
+    print(f"[info] 表头: {headers}")
+    print(f"[info] 原始行数: {extracted.get('rowCount', 0)}")
+
+    if not raw_rows:
+        print("[warn] 未解析到任何数据行（验证码未过 或 接口 401）")
+        return []
+
+    results = [{"headers": headers, "cells": cells} for cells in raw_rows]
+    return parse_rows(results)
+
 
 def qualify(item, filters):
     ratio_max = float(filters.get("ratio_max", 0.70))
@@ -446,7 +502,6 @@ def qualify(item, filters):
         return False
     if platforms and item["platform"].lower() not in platforms:
         return False
-
     p = item["platform_price"]
     if price_min is not None and (p is None or p < float(price_min)):
         return False
@@ -502,13 +557,12 @@ def discovery_message(item, unlock_at, sale_method):
 def mature_message(item, record, sale_method):
     ratio = item.get("ratio")
     ratio_text = f"{ratio:.4f}" if ratio is not None else "—"
-    change = fmt_pct(item.get("change_7d"))
     return (
         "⏰ <b>7天保护期到期复核</b>\n\n"
         f"<b>{item.get('name', record['name'])}</b>\n"
         f"当前平台：{item.get('platform', record.get('platform', '—'))}\n"
         f"当前挂刀比例：<b>{ratio_text}</b>\n"
-        f"当前7日涨跌：<b>{change}</b>\n"
+        f"当前7日涨跌：<b>{fmt_pct(item.get('change_7d'))}</b>\n"
         f"平台价：{fmt_money(item.get('platform_price'))}\n"
         f"Steam售价：{fmt_money(item.get('steam_price'))}\n"
         f"到手余额：{fmt_money(item.get('steam_balance'))}\n\n"
@@ -534,10 +588,9 @@ def run():
     rows = scrape_exchange(config)
     print(f"[info] 解析到 {len(rows)} 条有效商品")
 
-    # 调试：打印前几条比例
     for i, r in enumerate(rows[:8]):
         print(
-            f"  [{i+1}] {r['name'][:20]:20s}  ratio={r['ratio']:.4f}  "
+            f"  [{i+1}] {r['name'][:24]:24s}  ratio={r['ratio']:.4f}  "
             f"7d={r['change_7d']}  vol={r['volume']}  plat={r['platform']}"
         )
 
@@ -574,7 +627,6 @@ def run():
                 print(f"[error] Telegram 发送失败: {e}")
             changed = True
 
-    # 到期复核
     for key, record in list(candidates.items()):
         if record.get("status") != "waiting":
             continue
@@ -584,20 +636,15 @@ def run():
             continue
         if now_utc() < unlock_at:
             continue
-
-        item = by_key.get(key)
-        if item is None:
-            item = dict(record)
-            item.update(
-                {
-                    "ratio": None,
-                    "change_7d": None,
-                    "platform_price": None,
-                    "steam_price": None,
-                    "steam_balance": None,
-                    "volume": None,
-                }
-            )
+        item = by_key.get(key) or {
+            **record,
+            "ratio": None,
+            "change_7d": None,
+            "platform_price": None,
+            "steam_price": None,
+            "steam_balance": None,
+            "volume": None,
+        }
         try:
             telegram_send(token, chat_id, mature_message(item, record, sale_method))
             print(f"[tg] 已推送到期复核: {record.get('name')}")
@@ -607,7 +654,6 @@ def run():
         record["matured_at"] = now_utc().isoformat()
         changed = True
 
-    # 限制状态文件大小
     max_records = int(config.get("state", {}).get("max_records", 3000))
     if len(candidates) > max_records:
         matured = [(k, v) for k, v in candidates.items() if v.get("status") == "matured"]
@@ -619,11 +665,7 @@ def run():
     if changed:
         save_json(DATA_FILE, state)
 
-    summary = {
-        "scraped": len(rows),
-        "qualified": len(qualified),
-        "new_candidates": new_count,
-    }
+    summary = {"scraped": len(rows), "qualified": len(qualified), "new_candidates": new_count}
     print(json.dumps(summary, ensure_ascii=False))
     return summary
 
