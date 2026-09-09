@@ -104,7 +104,6 @@ def scrape_exchange(config):
 
     price_min = filters.get("price_min", 1)
     price_max = filters.get("price_max", 5000)
-    # 页面筛选用较低的成交量，真正过滤在代码里做
     page_volume = max(10, min(int(filters.get("volume_min", 50)), 50))
 
     with sync_playwright() as p:
@@ -113,7 +112,7 @@ def scrape_exchange(config):
             args=["--disable-blink-features=AutomationControlled", "--no-sandbox"],
         )
         context = browser.new_context(
-            viewport={"width": 1600, "height": 1200},
+            viewport={"width": 1600, "height": 1400},
             locale="zh-CN",
             user_agent=(
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -131,14 +130,13 @@ def scrape_exchange(config):
         except PlaywrightTimeoutError:
             pass
 
-        page.wait_for_timeout(3000)
+        page.wait_for_timeout(2500)
 
-        # 尝试关闭可能的验证码/弹窗（尽力而为）
+        # 关闭可能的弹窗
         for sel in [
-            "text=关闭",
             "button:has-text('关闭')",
+            "text=关闭",
             ".aliyun-captcha-close",
-            "[class*='close']",
         ]:
             try:
                 loc = page.locator(sel)
@@ -147,54 +145,78 @@ def scrape_exchange(config):
             except Exception:
                 pass
 
-        # ---------- 设置筛选条件 ----------
+        # ---------- 设置筛选（只动 text/number，绝不碰 radio） ----------
         print(f"[info] 设置筛选: 价格 {price_min}~{price_max}, 成交量>={page_volume}")
 
-        # 价格区间：两个相邻的 number input
         try:
-            # 常见结构：两个 input 在「价格区间」附近
-            inputs = page.locator("input[type='number'], input[type='text']").all()
-            # 更稳：用 placeholder 或附近文字定位
-            price_inputs = page.locator(
-                "div:has-text('价格区间') input, "
-                "div:has-text('价格') input[type='number'], "
-                "input[placeholder*='价']"
+            # Element UI / 常见：价格区间附近的两个可输入框
+            filled = page.evaluate(
+                """([minV, maxV, volV]) => {
+                    const isFillable = (el) => {
+                        if (!el || el.disabled || el.readOnly) return false;
+                        const t = (el.type || '').toLowerCase();
+                        if (t === 'radio' || t === 'checkbox' || t === 'hidden' || t === 'button') return false;
+                        return t === 'text' || t === 'number' || t === '' || t === 'search';
+                    };
+                    // 找「价格区间」附近的 input
+                    let priceInputs = [];
+                    const labels = Array.from(document.querySelectorAll('div, span, label'));
+                    for (const lab of labels) {
+                        const txt = (lab.textContent || '').trim();
+                        if (txt.includes('价格区间') || txt === '价格') {
+                            const box = lab.closest('div') || lab.parentElement;
+                            if (box) {
+                                const ins = Array.from(box.querySelectorAll('input')).filter(isFillable);
+                                if (ins.length >= 2) { priceInputs = ins; break; }
+                            }
+                        }
+                    }
+                    if (priceInputs.length < 2) {
+                        priceInputs = Array.from(document.querySelectorAll('input')).filter(isFillable);
+                    }
+                    if (priceInputs.length >= 2) {
+                        const setVal = (el, v) => {
+                            el.focus();
+                            el.value = String(v);
+                            el.dispatchEvent(new Event('input', { bubbles: true }));
+                            el.dispatchEvent(new Event('change', { bubbles: true }));
+                        };
+                        setVal(priceInputs[0], minV);
+                        setVal(priceInputs[1], maxV);
+                    }
+                    // 成交量
+                    let volInput = null;
+                    for (const lab of labels) {
+                        const txt = (lab.textContent || '').trim();
+                        if (txt.includes('日成交量') || txt.includes('成交量')) {
+                            const box = lab.closest('div') || lab.parentElement;
+                            if (box) {
+                                const ins = Array.from(box.querySelectorAll('input')).filter(isFillable);
+                                if (ins.length) { volInput = ins[0]; break; }
+                            }
+                        }
+                    }
+                    if (!volInput && priceInputs.length >= 3) volInput = priceInputs[2];
+                    if (volInput) {
+                        volInput.focus();
+                        volInput.value = String(volV);
+                        volInput.dispatchEvent(new Event('input', { bubbles: true }));
+                        volInput.dispatchEvent(new Event('change', { bubbles: true }));
+                    }
+                    return { priceCount: priceInputs.length, hasVol: !!volInput };
+                }""",
+                [price_min, price_max, page_volume],
             )
-            if price_inputs.count() >= 2:
-                price_inputs.nth(0).fill(str(price_min))
-                price_inputs.nth(1).fill(str(price_max))
-            else:
-                # 兜底：按页面上所有数字输入框顺序
-                all_num = page.locator("input[type='number']")
-                if all_num.count() >= 2:
-                    all_num.nth(0).fill(str(price_min))
-                    all_num.nth(1).fill(str(price_max))
+            print(f"[info] 输入框设置结果: {filled}")
         except Exception as e:
-            print(f"[warn] 设置价格失败: {e}")
+            print(f"[warn] 设置筛选失败: {e}")
 
-        # 成交量
-        try:
-            vol_input = page.locator(
-                "div:has-text('日成交量') input, "
-                "div:has-text('成交量') input, "
-                "input[placeholder*='成交']"
-            ).first
-            if vol_input.count() > 0:
-                vol_input.fill(str(page_volume))
-            else:
-                # 最后一个数字输入框通常是成交量
-                all_num = page.locator("input[type='number']")
-                if all_num.count() >= 3:
-                    all_num.nth(2).fill(str(page_volume))
-        except Exception as e:
-            print(f"[warn] 设置成交量失败: {e}")
-
-        page.wait_for_timeout(800)
+        page.wait_for_timeout(600)
 
         # 点击「应用设置」
         applied = False
-        for text in ["应用设置", "应用", "确定", "查询"]:
-            btn = page.locator(f"button:has-text('{text}'), .ant-btn:has-text('{text}')")
+        for text in ["应用设置", "应用"]:
+            btn = page.locator(f"button:has-text('{text}')")
             if btn.count() > 0:
                 try:
                     btn.first.click(timeout=3000)
@@ -203,105 +225,132 @@ def scrape_exchange(config):
                     break
                 except Exception:
                     continue
-
         if not applied:
-            print("[warn] 未找到应用按钮，尝试直接抓取")
+            print("[warn] 未找到应用按钮，继续抓取")
 
-        # 等待表格数据出现
+        # 等待数据
         print("[info] 等待表格数据...")
-        data_ready = False
-        for attempt in range(12):
-            page.wait_for_timeout(1500)
-            # 检查是否有真实数据行
-            rows = page.locator("table tbody tr")
-            n = rows.count()
-            if n > 0:
-                # 排除纯 “No Data” 行
-                first_text = rows.first.inner_text() if n > 0 else ""
-                if "No Data" not in first_text and len(first_text.strip()) > 5:
-                    data_ready = True
-                    print(f"[info] 表格已加载，约 {n} 行")
-                    break
-            print(f"[info] 等待中... ({attempt + 1}/12)")
-
-        if not data_ready:
-            # 再点一次应用
-            try:
-                page.locator("button:has-text('应用设置')").first.click(timeout=2000)
-                page.wait_for_timeout(4000)
-            except Exception:
-                pass
-
-        page.wait_for_timeout(wait_ms // 2)
-
-        # ---------- 解析表格 ----------
-        tables = page.locator("table")
-        if tables.count() == 0:
-            html_snip = page.content()[:2000]
-            browser.close()
-            raise RuntimeError(f"未找到 table。页面片段: {html_snip[:300]}")
-
-        chosen = None
-        chosen_headers = []
-        for i in range(tables.count()):
-            t = tables.nth(i)
-            try:
-                hs = t.locator("thead tr").first.locator("th").all_inner_texts()
-            except Exception:
-                continue
-            joined = " ".join(hs)
-            if any(k in joined for k in ["挂刀比例", "七日涨跌", "Steam售价", "饰品名称", "到手Steam"]):
-                chosen = t
-                chosen_headers = [h.strip() for h in hs]
+        for attempt in range(15):
+            page.wait_for_timeout(1200)
+            # 多种选择器探测是否有数据
+            ready = page.evaluate(
+                """() => {
+                    const bad = (t) => !t || t.includes('No Data') || t.trim().length < 3;
+                    // 标准 tr
+                    const trs = Array.from(document.querySelectorAll('table tbody tr, .el-table__body tr, .el-table__row'));
+                    for (const tr of trs) {
+                        const t = (tr.innerText || '').trim();
+                        if (!bad(t) && t.length > 10) return true;
+                    }
+                    // 任意带数字和比例样式的行
+                    const divs = Array.from(document.querySelectorAll('[class*="row"], [class*="table"] tr'));
+                    let hit = 0;
+                    for (const d of divs) {
+                        const t = (d.innerText || '');
+                        if (/0\\.\\d{2,4}/.test(t) && /¥|￥|\\d+%/.test(t)) hit++;
+                    }
+                    return hit >= 3;
+                }"""
+            )
+            if ready:
+                print(f"[info] 检测到数据 (attempt {attempt + 1})")
                 break
-
-        if chosen is None:
-            # 兜底用第一个有 thead 的表
-            for i in range(tables.count()):
-                t = tables.nth(i)
+            if attempt % 3 == 2:
+                print(f"[info] 等待中... ({attempt + 1}/15)")
                 try:
-                    hs = t.locator("thead tr").first.locator("th").all_inner_texts()
-                    if hs:
-                        chosen = t
-                        chosen_headers = [h.strip() for h in hs]
-                        break
+                    page.locator("button:has-text('应用设置')").first.click(timeout=1500)
                 except Exception:
-                    continue
+                    pass
 
-        if chosen is None:
-            browser.close()
-            raise RuntimeError("找到 table，但无法识别表头")
+        page.wait_for_timeout(max(1500, wait_ms // 3))
 
-        print(f"[info] 表头: {chosen_headers}")
+        # ---------- 用 JS 统一抽表头 + 行（兼容 Element UI 虚拟表 / 双表结构） ----------
+        extracted = page.evaluate(
+            """() => {
+                const clean = (s) => (s || '').replace(/\\s+/g, ' ').trim();
 
-        rows = chosen.locator("tbody tr")
-        results = []
-        row_count = rows.count()
-        print(f"[info] 原始行数: {row_count}")
+                // 1) 找表头
+                let headers = [];
+                const ths = document.querySelectorAll(
+                    'table thead th, .el-table__header th, .el-table__header-wrapper th'
+                );
+                if (ths.length) {
+                    headers = Array.from(ths).map(th => clean(th.innerText));
+                }
+                // 去重连续空头
+                headers = headers.filter((h, i, arr) => h || (i > 0 && arr[i-1]));
 
-        for i in range(row_count):
-            cells = rows.nth(i).locator("td").all_inner_texts()
-            if not cells:
-                continue
-            text_join = " ".join(c.strip() for c in cells)
-            if "No Data" in text_join or len(text_join.strip()) < 3:
-                continue
-            results.append({"headers": chosen_headers, "cells": [c.strip() for c in cells]})
+                // 2) 找数据行：优先 tbody / el-table body
+                const rowSelectors = [
+                    'table tbody tr',
+                    '.el-table__body-wrapper tbody tr',
+                    '.el-table__body tr',
+                    '.el-table__row',
+                    'table tr',
+                ];
+                let rows = [];
+                for (const sel of rowSelectors) {
+                    const els = Array.from(document.querySelectorAll(sel));
+                    const good = [];
+                    for (const el of els) {
+                        // 跳过表头行
+                        if (el.querySelector('th')) continue;
+                        const cells = Array.from(el.querySelectorAll('td, .el-table__cell, [class*="cell"]'));
+                        let texts;
+                        if (cells.length >= 4) {
+                            texts = cells.map(c => clean(c.innerText));
+                        } else {
+                            texts = clean(el.innerText).split('\\n').map(clean).filter(Boolean);
+                        }
+                        const joined = texts.join(' ');
+                        if (!joined || joined.includes('No Data') || joined.length < 8) continue;
+                        // 至少要有数字
+                        if (!/\\d/.test(joined)) continue;
+                        good.push(texts);
+                    }
+                    if (good.length >= 3) {
+                        rows = good;
+                        break;
+                    }
+                    if (good.length > rows.length) rows = good;
+                }
+
+                return { headers, rows, rowCount: rows.length };
+            }"""
+        )
 
         browser.close()
 
+    headers = extracted.get("headers") or []
+    raw_rows = extracted.get("rows") or []
+    print(f"[info] 表头: {headers}")
+    print(f"[info] 原始行数: {extracted.get('rowCount', 0)}")
+
+    if not raw_rows:
+        print("[warn] 未解析到任何数据行，可能页面仍是 No Data 或结构变化")
+        return []
+
+    # 转成 parse_rows 需要的格式
+    results = []
+    for cells in raw_rows:
+        results.append({"headers": headers, "cells": cells})
     return parse_rows(results)
+
 
 
 def parse_rows(raw_rows):
     out = []
     for row in raw_rows:
-        headers = row["headers"]
-        cells = row["cells"]
-        if len(cells) < 5:
+        headers = row.get("headers") or []
+        cells = row.get("cells") or []
+        if len(cells) < 4:
             continue
 
-        data = {headers[i]: cells[i] for i in range(min(len(headers), len(cells)))}
+        data = {}
+        for i in range(min(len(headers), len(cells))):
+            h = (headers[i] or "").strip()
+            if h:
+                data[h] = cells[i]
 
         def col(*keywords):
             for h, v in data.items():
@@ -309,8 +358,16 @@ def parse_rows(raw_rows):
                     return v
             return None
 
-        name = col("饰品名称", "商品", "名称") or (cells[1] if len(cells) > 1 else cells[0])
-        # 去掉可能的图片/空格
+        # 按表头取；取不到则按常见列顺序兜底
+        # 常见顺序: 排行, 名称, 七日涨跌, 成交量, Steam售价, 平台售价, 到手余额, 挂刀比例, 平台, ...
+        name = col("饰品名称", "商品", "名称")
+        if not name:
+            # 找第一个不含纯数字/百分比的较长文本
+            for c in cells:
+                t = re.sub(r"\s+", " ", str(c)).strip()
+                if len(t) >= 2 and not re.fullmatch(r"[\d.%+\-¥￥,\s]+", t) and t not in {"刚刚", "Steam"}:
+                    name = t
+                    break
         if name:
             name = re.sub(r"\s+", " ", name).strip()
 
@@ -320,16 +377,37 @@ def parse_rows(raw_rows):
         platform_price = parse_number(col("平台售价", "平台价"))
         steam_balance = parse_number(col("到手Steam余额", "Steam余额", "到手余额"))
         ratio = normalize_ratio(col("挂刀比例", "比例"))
-        platform = col("交易平台", "平台") or ""
-        market_link = col("Steam市场", "市场") or ""
+        platform = col("交易平台") or ""
+        # 「平台」单独匹配时容易和「平台售价」冲突，上面已优先用更长关键词
+        if not platform:
+            for h, v in data.items():
+                if h == "交易平台" or (h == "平台"):
+                    platform = v
+                    break
+        market_link = col("Steam市场") or ""
         updated = col("更新时间") or ""
+
+        # 若表头匹配失败，尝试从 cells 里用正则抠挂刀比例 (0.6x ~ 0.9x)
+        if ratio is None:
+            for c in cells:
+                m = re.search(r"\b0\.\d{2,4}\b", str(c))
+                if m:
+                    ratio = float(m.group())
+                    break
+
+        if change_7d is None:
+            for c in cells:
+                m = re.search(r"([+\-]?\d+(?:\.\d+)?)\s*%", str(c))
+                if m:
+                    change_7d = float(m.group(1))
+                    break
 
         if not name or ratio is None:
             continue
 
         steam_url = (
             market_link
-            if market_link.startswith("http")
+            if str(market_link).startswith("http")
             else "https://steamcommunity.com/market/search?appid=730&q=" + quote(name)
         )
 
@@ -349,6 +427,7 @@ def parse_rows(raw_rows):
             }
         )
     return out
+
 
 
 def qualify(item, filters):
