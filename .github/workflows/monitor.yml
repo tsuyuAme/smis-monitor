@@ -3,8 +3,9 @@ name: SMIS monitor
 on:
   workflow_dispatch:
   schedule:
-    # 每小时的 03/18/33/48 分，约每 15 分钟一次
-    - cron: "3,18,33,48 * * * *"
+    # 每小时一次，错开整点（每小时第 18 分，UTC）
+    # 北京时间约为每小时 :18（UTC+8 即本地 :18 对应 UTC 前一小时 :18... 实际 UTC 18 分 = 北京 01:18, 02:18...）
+    - cron: "18 * * * *"
 
 permissions:
   contents: write
