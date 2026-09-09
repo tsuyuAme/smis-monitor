@@ -738,7 +738,7 @@ def run():
     for i, r in enumerate(rows[:8]):
         print(
             f"  [{i+1}] {r['name'][:24]:24s}  ratio={r['ratio']:.4f}  "
-            f"7d={r['change_7d']}  vol={r['volume']}  plat={r['platform']}"
+            f"7d={r['change_7d'] if r['change_7d'] is None else round(r['change_7d'], 2)}  vol={r['volume']}  plat={r['platform']}"
         )
 
     by_key = {key_for(x): x for x in rows}
@@ -774,7 +774,6 @@ def run():
 
     changed = False
     new_count = 0
-    new_items = []
 
     for item in qualified:
         key = key_for(item)
@@ -785,17 +784,18 @@ def run():
                 "platform": item["platform"],
                 "steam_url": item.get("steam_url"),
                 "smis_url": smis_item_url(item),
+                "commodity_id": item.get("commodity_id"),
                 "first_seen": now_utc().isoformat(),
                 "unlock_at": unlock.isoformat(),
                 "discovery_ratio": item["ratio"],
                 "discovery_change_7d": item["change_7d"],
                 "status": "waiting",
             }
-            new_items.append(item)
+            new_count += 1
             changed = True
 
-    # 本轮新发现合并推送，最多 10 条（qualified 已按比例排序）
-    batch = new_items[:10]
+    # 只要有符合条件的，就推送 Top（最多 10），链接用 commodity/{id}
+    batch = qualified[:10]
     if batch:
         try:
             telegram_send(
@@ -803,12 +803,13 @@ def run():
                 chat_id,
                 discovery_batch_message(batch, sale_method, hold_days),
             )
-            new_count = len(batch)
-            print(f"[tg] 已合并推送 {new_count} 条新机会")
+            print(f"[tg] 已推送 Top {len(batch)}（本轮新发现 {new_count}）")
             for it in batch:
-                print(f"  → {it['name']}")
+                print(f"  → id={it.get('commodity_id')} {it['name']} {smis_item_url(it)}")
         except Exception as e:
             print(f"[error] Telegram 发送失败: {e}")
+    else:
+        print("[info] 无符合条件商品，不推送")
 
     for key, record in list(candidates.items()):
         if record.get("status") != "waiting":
