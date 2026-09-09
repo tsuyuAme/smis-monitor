@@ -87,94 +87,138 @@ def get_config():
 # ---------------------------------------------------------------------------
 # 从 API JSON 解析（优先）
 # ---------------------------------------------------------------------------
-def items_from_api_payload(payload):
+def items_from_api_payload(payload, _depth=0):
     """尽量兼容多种返回结构，抽出商品列表。"""
     if payload is None:
         return []
 
-    candidates = []
-    if isinstance(payload, list):
-        candidates = payload
-    elif isinstance(payload, dict):
-        for key in ("data", "list", "records", "rows", "result", "items"):
-            val = payload.get(key)
-            if isinstance(val, list) and val:
-                candidates = val
-                break
-            if isinstance(val, dict):
-                for k2 in ("list", "records", "rows", "items"):
-                    if isinstance(val.get(k2), list) and val[k2]:
-                        candidates = val[k2]
-                        break
-                if candidates:
-                    break
-        if not candidates and any(k in payload for k in ("name", "ratio", "commodityName")):
-            candidates = [payload]
+    def looks_like_item(d):
+        if not isinstance(d, dict):
+            return False
+        keys = {str(k).lower() for k in d.keys()}
+        has_name = any(k in keys for k in (
+            "name", "commodityname", "goodsname", "itemname",
+            "market_hash_name", "markethashname", "commodity_name",
+        ))
+        has_ratio = any(k in keys for k in (
+            "ratio", "exchangeratio", "kniferatio", "rate", "exchange_ratio",
+        ))
+        # 或同时有平台价和 steam 相关价
+        has_prices = any("price" in k or "余额" in str(k) for k in keys)
+        return has_name or (has_ratio and has_prices) or (
+            has_name is False and has_ratio and len(keys) >= 5
+        )
+
+    def walk(obj, depth=0):
+        if depth > 6:
+            return []
+        found = []
+        if isinstance(obj, list):
+            if obj and all(isinstance(x, dict) for x in obj[:3]):
+                # 整表都是商品
+                if looks_like_item(obj[0]) or any(
+                    k in {str(x).lower() for x in obj[0].keys()}
+                    for k in ("ratio", "name", "steamprice", "platformprice")
+                ):
+                    return list(obj)
+            for x in obj:
+                found.extend(walk(x, depth + 1))
+            return found
+        if isinstance(obj, dict):
+            if looks_like_item(obj) and depth > 0:
+                return [obj]
+            # 优先常见字段
+            for key in ("list", "records", "rows", "items", "result", "data", "content"):
+                if key in obj:
+                    found.extend(walk(obj[key], depth + 1))
+                    if found:
+                        return found
+            for v in obj.values():
+                if isinstance(v, (list, dict)):
+                    found.extend(walk(v, depth + 1))
+                    if found:
+                        return found
+        return found
+
+    candidates = walk(payload)
+
+    # 调试：没抽到时打印结构
+    if not candidates and _depth == 0 and isinstance(payload, dict):
+        try:
+            preview = {k: (type(v).__name__ if not isinstance(v, (int, float, str, bool, type(None))) else v)
+                       for k, v in list(payload.items())[:12]}
+            print(f"[debug] API 顶层结构: {preview}")
+            data = payload.get("data")
+            if isinstance(data, dict):
+                print(f"[debug] data 键: {list(data.keys())[:20]}")
+            elif isinstance(data, list) and data:
+                print(f"[debug] data[0] 键: {list(data[0].keys()) if isinstance(data[0], dict) else type(data[0])}")
+        except Exception as e:
+            print(f"[debug] 打印结构失败: {e}")
 
     out = []
     for it in candidates:
         if not isinstance(it, dict):
             continue
-        # 字段名尽量兼容
-        name = (
-            it.get("name")
-            or it.get("commodityName")
-            or it.get("goodsName")
-            or it.get("itemName")
-            or it.get("market_hash_name")
-            or it.get("marketHashName")
-        )
-        ratio = it.get("ratio") or it.get("exchangeRatio") or it.get("knifeRatio") or it.get("rate")
-        if ratio is None and it.get("platformPrice") and it.get("steamBalance"):
+        # 大小写不敏感取字段
+        lower_map = {str(k).lower(): v for k, v in it.items()}
+
+        def g(*names):
+            for n in names:
+                if n.lower() in lower_map and lower_map[n.lower()] is not None:
+                    return lower_map[n.lower()]
+            return None
+
+        name = g("name", "commodityName", "goodsName", "itemName", "market_hash_name", "marketHashName", "commodity_name")
+        ratio = g("ratio", "exchangeRatio", "knifeRatio", "rate", "exchange_ratio")
+        change_7d = g("change7d", "change_7d", "weekChange", "sevenDayChange", "rise", "changePercent", "week_change")
+        volume = g("volume", "turnover", "dayVolume", "sellNum", "day_volume", "quantity")
+        steam_price = g("steamPrice", "steam_price", "steamSellPrice", "steam_sell_price")
+        platform_price = g("platformPrice", "platform_price", "sellPrice", "price")
+        steam_balance = g("steamBalance", "steam_balance", "toSteam", "to_steam", "steamBalancePrice")
+        platform = g("platform", "platformName", "from", "platform_name") or ""
+
+        if name is None:
+            continue
+        if ratio is None and platform_price is not None and steam_balance is not None:
             try:
-                ratio = float(it["platformPrice"]) / float(it["steamBalance"])
+                ratio = float(platform_price) / float(steam_balance)
             except Exception:
                 pass
-
-        change_7d = (
-            it.get("change7d")
-            or it.get("change_7d")
-            or it.get("weekChange")
-            or it.get("sevenDayChange")
-            or it.get("rise")
-        )
-        volume = it.get("volume") or it.get("turnover") or it.get("dayVolume") or it.get("sellNum")
-        steam_price = it.get("steamPrice") or it.get("steam_price") or it.get("steamSellPrice")
-        platform_price = it.get("platformPrice") or it.get("platform_price") or it.get("sellPrice")
-        steam_balance = it.get("steamBalance") or it.get("steam_balance") or it.get("toSteam")
-        platform = it.get("platform") or it.get("platformName") or it.get("from") or ""
-
-        if name is None or ratio is None:
+        if ratio is None:
             continue
 
         ratio = normalize_ratio(ratio)
-        change_7d = parse_percent(change_7d) if not isinstance(change_7d, (int, float)) else float(change_7d)
-        volume = parse_number(volume) if not isinstance(volume, (int, float)) else float(volume)
-        steam_price = parse_number(steam_price) if not isinstance(steam_price, (int, float)) else float(steam_price)
-        platform_price = parse_number(platform_price) if not isinstance(platform_price, (int, float)) else float(platform_price)
-        steam_balance = parse_number(steam_balance) if not isinstance(steam_balance, (int, float)) else float(steam_balance)
+        if not isinstance(change_7d, (int, float)):
+            change_7d = parse_percent(change_7d)
+        else:
+            change_7d = float(change_7d)
+        if not isinstance(volume, (int, float)):
+            volume = parse_number(volume)
+        if not isinstance(steam_price, (int, float)):
+            steam_price = parse_number(steam_price)
+        if not isinstance(platform_price, (int, float)):
+            platform_price = parse_number(platform_price)
+        if not isinstance(steam_balance, (int, float)):
+            steam_balance = parse_number(steam_balance)
 
-        out.append(
-            {
-                "name": str(name).strip(),
-                "change_7d": change_7d,
-                "volume": volume,
-                "steam_price": steam_price,
-                "platform_price": platform_price,
-                "steam_balance": steam_balance,
-                "ratio": ratio,
-                "platform": str(platform),
-                "steam_url": "https://steamcommunity.com/market/search?appid=730&q=" + quote(str(name)),
-                "updated": str(it.get("updateTime") or it.get("updated") or ""),
-                "scraped_at": now_utc().isoformat(),
-            }
-        )
+        out.append({
+            "name": str(name).strip(),
+            "change_7d": change_7d,
+            "volume": volume,
+            "steam_price": steam_price,
+            "platform_price": platform_price,
+            "steam_balance": steam_balance,
+            "ratio": ratio,
+            "platform": str(platform),
+            "steam_url": "https://steamcommunity.com/market/search?appid=730&q=" + quote(str(name)),
+            "updated": str(g("updateTime", "updated", "update_time") or ""),
+            "scraped_at": now_utc().isoformat(),
+        })
     return out
 
 
-# ---------------------------------------------------------------------------
-# 从 DOM 表格解析（备用）
-# ---------------------------------------------------------------------------
+
 def parse_rows(raw_rows):
     out = []
     for row in raw_rows:
@@ -320,62 +364,115 @@ def scrape_exchange(config):
         page.wait_for_timeout(2000)
 
         if manual_wait > 0:
-            print(f"[info] 请在弹出的浏览器里完成验证码（如有），等待 {manual_wait} 秒...")
-            print("[info] 看到表格有数据后，程序会自动继续；也可等倒计时结束")
-            page.wait_for_timeout(manual_wait * 1000)
+            print(f"[info] 请在弹出的浏览器里完成验证码（如有），等待最多 {manual_wait} 秒...")
+            print("[info] 看到表格有数据后会提前继续")
+            for _w in range(manual_wait):
+                page.wait_for_timeout(1000)
+                if api_payloads:
+                    # 检查是否真有列表数据
+                    ok = False
+                    for pl in api_payloads:
+                        if items_from_api_payload(pl):
+                            ok = True
+                            break
+                    if ok:
+                        print(f"[info] 已拿到有效接口数据，提前结束等待 (第 {_w+1} 秒)")
+                        break
+                ready = page.evaluate("""() => {
+                    const trs = document.querySelectorAll('table tbody tr, .el-table__body tr');
+                    for (const tr of trs) {
+                        const t = (tr.innerText || '').trim();
+                        if (t && !t.includes('No Data') && t.length > 15) return true;
+                    }
+                    return false;
+                }""")
+                if ready and _w >= 5:
+                    print(f"[info] DOM 已有数据，提前结束等待 (第 {_w+1} 秒)")
+                    break
 
-        # 设置筛选
+        # 设置筛选（用 Playwright 精确定位「价格区间」「日成交量」旁的输入框）
         print(f"[info] 设置筛选: 价格 {price_min}~{price_max}, 成交量>={page_volume}")
+
+        def fill_near_label(label_text, values):
+            """找到包含 label_text 的那一行，填写其中的 input。"""
+            # 精确文本节点
+            loc = page.locator(f"text={label_text}").first
+            if loc.count() == 0:
+                loc = page.get_by_text(label_text, exact=False).first
+            # 向上找较近的容器
+            row = loc.locator("xpath=ancestor::div[contains(@class,'el-') or contains(@class,'form') or contains(@class,'item')][1]")
+            if row.count() == 0:
+                row = loc.locator("xpath=ancestor::div[2]")
+            inputs = row.locator("input:not([type='radio']):not([type='checkbox']):not([type='hidden'])")
+            n = inputs.count()
+            print(f"[info] 标签「{label_text}」附近 input 数量: {n}")
+            for i, v in enumerate(values):
+                if i >= n:
+                    break
+                el = inputs.nth(i)
+                el.click(timeout=3000)
+                el.fill("")
+                el.fill(str(v))
+                el.press("Tab")
+            return n
+
         try:
-            filled = page.evaluate(
-                """([minV, maxV, volV]) => {
-                    const isFillable = (el) => {
-                        if (!el || el.disabled || el.readOnly) return false;
-                        const t = (el.type || '').toLowerCase();
-                        if (['radio','checkbox','hidden','button','submit'].includes(t)) return false;
-                        return true;
-                    };
-                    let priceInputs = [];
-                    const labels = Array.from(document.querySelectorAll('div, span, label'));
-                    for (const lab of labels) {
-                        const txt = (lab.textContent || '').trim();
-                        if (txt.includes('价格区间') || txt === '价格') {
-                            const box = lab.closest('div') || lab.parentElement;
-                            if (box) {
-                                const ins = Array.from(box.querySelectorAll('input')).filter(isFillable);
-                                if (ins.length >= 2) { priceInputs = ins; break; }
+            # 先点「重置设置」避免沿用错误缓存
+            try:
+                rst = page.locator("button:has-text('重置设置')")
+                if rst.count() > 0:
+                    rst.first.click(timeout=2000)
+                    page.wait_for_timeout(800)
+                    print("[info] 已点重置设置")
+            except Exception:
+                pass
+
+            n_price = fill_near_label("价格区间", [price_min, price_max])
+            if n_price < 2:
+                # 兜底：页面上所有可见 number/text 输入，按顺序找价格行
+                print("[warn] 价格区间定位失败，尝试全局输入框")
+                all_in = page.locator("input.el-input__inner, input[type='number'], input[type='text']")
+                vals = []
+                for i in range(min(all_in.count(), 12)):
+                    try:
+                        vis = all_in.nth(i).is_visible()
+                        if vis:
+                            vals.append(i)
+                    except Exception:
+                        pass
+                # 通常价格两个 + 成交量一个
+                if len(vals) >= 2:
+                    all_in.nth(vals[0]).fill(str(price_min))
+                    all_in.nth(vals[1]).fill(str(price_max))
+                    if len(vals) >= 3:
+                        all_in.nth(vals[2]).fill(str(page_volume))
+            else:
+                fill_near_label("日成交量", [page_volume])
+
+            # 读回当前值确认
+            try:
+                shown = page.evaluate("""() => {
+                    const pick = (label) => {
+                        const nodes = Array.from(document.querySelectorAll('div,span,label'));
+                        for (const n of nodes) {
+                            if ((n.childNodes[0] && n.childNodes[0].textContent || n.textContent || '').trim().startsWith(label)) {
+                                let p = n;
+                                for (let i=0;i<5 && p;i++, p=p.parentElement) {
+                                    const ins = Array.from(p.querySelectorAll('input')).filter(el => {
+                                        const t=(el.type||'').toLowerCase();
+                                        return !['radio','checkbox','hidden'].includes(t);
+                                    });
+                                    if (ins.length) return ins.map(el => el.value);
+                                }
                             }
                         }
-                    }
-                    if (priceInputs.length < 2)
-                        priceInputs = Array.from(document.querySelectorAll('input')).filter(isFillable);
-                    const setVal = (el, v) => {
-                        el.focus(); el.value = String(v);
-                        el.dispatchEvent(new Event('input', { bubbles: true }));
-                        el.dispatchEvent(new Event('change', { bubbles: true }));
+                        return [];
                     };
-                    if (priceInputs.length >= 2) {
-                        setVal(priceInputs[0], minV);
-                        setVal(priceInputs[1], maxV);
-                    }
-                    let volInput = null;
-                    for (const lab of labels) {
-                        const txt = (lab.textContent || '').trim();
-                        if (txt.includes('日成交量') || txt.includes('成交量')) {
-                            const box = lab.closest('div') || lab.parentElement;
-                            if (box) {
-                                const ins = Array.from(box.querySelectorAll('input')).filter(isFillable);
-                                if (ins.length) { volInput = ins[0]; break; }
-                            }
-                        }
-                    }
-                    if (!volInput && priceInputs.length >= 3) volInput = priceInputs[2];
-                    if (volInput) setVal(volInput, volV);
-                    return { priceCount: priceInputs.length, hasVol: !!volInput };
-                }""",
-                [price_min, price_max, page_volume],
-            )
-            print(f"[info] 输入框设置结果: {filled}")
+                    return { price: pick('价格'), volume: pick('日成交') };
+                }""")
+                print(f"[info] 读回输入框: {shown}")
+            except Exception as e:
+                print(f"[warn] 读回失败: {e}")
         except Exception as e:
             print(f"[warn] 设置筛选失败: {e}")
 
@@ -419,10 +516,34 @@ def scrape_exchange(config):
 
         page.wait_for_timeout(max(1000, wait_ms // 3))
 
+        no_data = page.evaluate("""() => {
+            const body = document.body.innerText || '';
+            return body.includes('No Data') && !/0\.\d{2,}/.test(body);
+        }""")
+        if no_data and not api_payloads:
+            print("[warn] 页面 No Data，尝试重置筛选后重新加载")
+            try:
+                page.locator("button:has-text('重置设置')").first.click(timeout=2000)
+                page.wait_for_timeout(600)
+                page.locator("button:has-text('应用设置')").first.click(timeout=2000)
+                page.wait_for_timeout(3500)
+            except Exception as e:
+                print(f"[warn] 重置失败: {e}")
+
         # 优先用 API 数据
         items = []
         for payload in api_payloads:
-            items.extend(items_from_api_payload(payload))
+            part = items_from_api_payload(payload)
+            items.extend(part)
+            if not part:
+                try:
+                    DEBUG_DIR.mkdir(parents=True, exist_ok=True)
+                    (DEBUG_DIR / "last_api.json").write_text(
+                        json.dumps(payload, ensure_ascii=False, indent=2)[:80000], "utf-8"
+                    )
+                    print("[debug] 已保存 last_api.json 供分析字段")
+                except Exception as e:
+                    print(f"[debug] 保存 API 失败: {e}")
         if items:
             print(f"[info] 从 API 解析到 {len(items)} 条")
             context.close()
@@ -595,7 +716,30 @@ def run():
         )
 
     by_key = {key_for(x): x for x in rows}
-    qualified = [x for x in rows if qualify(x, filters)]
+    print(
+        f"[info] 过滤条件: ratio<={filters.get('ratio_max')} "
+        f"跌幅>={filters.get('drop_min_pct')}% "
+        f"vol>={filters.get('volume_min')} "
+        f"价 {filters.get('price_min')}~{filters.get('price_max')}"
+    )
+    qualified = []
+    skip_shown = 0
+    for x in rows:
+        if qualify(x, filters):
+            qualified.append(x)
+        elif skip_shown < 5:
+            reasons = []
+            rm = float(filters.get("ratio_max", 0.70))
+            dm = float(filters.get("drop_min_pct", 3))
+            vm = float(filters.get("volume_min", 50))
+            if x["ratio"] is None or x["ratio"] > rm:
+                reasons.append(f"ratio={x['ratio']}>{rm}")
+            if x["change_7d"] is None or x["change_7d"] > -dm:
+                reasons.append(f"7d={x['change_7d']}未跌够{dm}%")
+            if x["volume"] is not None and x["volume"] < vm:
+                reasons.append(f"vol={x['volume']}<{vm}")
+            print(f"  [skip] {str(x['name'])[:18]}: {', '.join(reasons) or '其他'}")
+            skip_shown += 1
     qualified.sort(key=lambda x: (x["ratio"], -(x["volume"] or 0)))
 
     print(f"[info] 符合过滤条件: {len(qualified)} 条")
