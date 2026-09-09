@@ -1,3 +1,224 @@
 {
-  "candidates": {}
+  "candidates": {
+    "暗黑魔导士护服::ECO": {
+      "name": "暗黑魔导士护服",
+      "platform": "ECO",
+      "steam_url": "https://steamcommunity.com/market/search?appid=730&q=%E6%9A%97%E9%BB%91%E9%AD%94%E5%AF%BC%E5%A3%AB%E6%8A%A4%E6%9C%8D",
+      "first_seen": "2026-09-09T08:22:38.791749+00:00",
+      "unlock_at": "2026-09-16T08:22:38.791743+00:00",
+      "discovery_ratio": 0.5288,
+      "discovery_change_7d": -3.66,
+      "status": "waiting"
+    },
+    "MAG-7 | 声纳 (久经沙场)::BUFF": {
+      "name": "MAG-7 | 声纳 (久经沙场)",
+      "platform": "BUFF",
+      "steam_url": "https://steamcommunity.com/market/search?appid=730&q=MAG-7%20%7C%20%E5%A3%B0%E7%BA%B3%20%28%E4%B9%85%E7%BB%8F%E6%B2%99%E5%9C%BA%29",
+      "first_seen": "2026-09-09T08:22:39.494602+00:00",
+      "unlock_at": "2026-09-16T08:22:39.494595+00:00",
+      "discovery_ratio": 0.5596,
+      "discovery_change_7d": -6.13,
+      "status": "waiting"
+    },
+    "印花 | Imperial Esports（闪耀）| 2022年安特卫普锦标赛::UUYP": {
+      "name": "印花 | Imperial Esports（闪耀）| 2022年安特卫普锦标赛",
+      "platform": "UUYP",
+      "steam_url": "https://steamcommunity.com/market/search?appid=730&q=%E5%8D%B0%E8%8A%B1%20%7C%20Imperial%20Esports%EF%BC%88%E9%97%AA%E8%80%80%EF%BC%89%7C%202022%E5%B9%B4%E5%AE%89%E7%89%B9%E5%8D%AB%E6%99%AE%E9%94%A6%E6%A0%87%E8%B5%9B",
+      "first_seen": "2026-09-09T08:22:40.112132+00:00",
+      "unlock_at": "2026-09-16T08:22:40.112125+00:00",
+      "discovery_ratio": 0.5706,
+      "discovery_change_7d": -5.0,
+      "status": "waiting"
+    },
+    "P90 | 牵引力 (久经沙场)::BUFF": {
+      "name": "P90 | 牵引力 (久经沙场)",
+      "platform": "BUFF",
+      "steam_url": "https://steamcommunity.com/market/search?appid=730&q=P90%20%7C%20%E7%89%B5%E5%BC%95%E5%8A%9B%20%28%E4%B9%85%E7%BB%8F%E6%B2%99%E5%9C%BA%29",
+      "first_seen": "2026-09-09T08:22:40.734459+00:00",
+      "unlock_at": "2026-09-16T08:22:40.734450+00:00",
+      "discovery_ratio": 0.5714,
+      "discovery_change_7d": -4.14,
+      "status": "waiting"
+    },
+    "CZ75自动型 | 印花板 (久经沙场)::BUFF": {
+      "name": "CZ75自动型 | 印花板 (久经沙场)",
+      "platform": "BUFF",
+      "steam_url": "https://steamcommunity.com/market/search?appid=730&q=CZ75%E8%87%AA%E5%8A%A8%E5%9E%8B%20%7C%20%E5%8D%B0%E8%8A%B1%E6%9D%BF%20%28%E4%B9%85%E7%BB%8F%E6%B2%99%E5%9C%BA%29",
+      "first_seen": "2026-09-09T08:22:41.368024+00:00",
+      "unlock_at": "2026-09-16T08:22:41.368017+00:00",
+      "discovery_ratio": 0.5723,
+      "discovery_change_7d": -4.12,
+      "status": "waiting"
+    },
+    "P250 | 铜绿 (略有磨损)::BUFF": {
+      "name": "P250 | 铜绿 (略有磨损)",
+      "platform": "BUFF",
+      "steam_url": "https://steamcommunity.com/market/search?appid=730&q=P250%20%7C%20%E9%93%9C%E7%BB%BF%20%28%E7%95%A5%E6%9C%89%E7%A3%A8%E6%8D%9F%29",
+      "first_seen": "2026-09-09T08:22:42.027064+00:00",
+      "unlock_at": "2026-09-16T08:22:42.027056+00:00",
+      "discovery_ratio": 0.5769,
+      "discovery_change_7d": -6.25,
+      "status": "waiting"
+    },
+    "M249 | O.S.I.P.R. (战痕累累)::BUFF": {
+      "name": "M249 | O.S.I.P.R. (战痕累累)",
+      "platform": "BUFF",
+      "steam_url": "https://steamcommunity.com/market/search?appid=730&q=M249%20%7C%20O.S.I.P.R.%20%28%E6%88%98%E7%97%95%E7%B4%AF%E7%B4%AF%29",
+      "first_seen": "2026-09-09T08:22:42.655309+00:00",
+      "unlock_at": "2026-09-16T08:22:42.655301+00:00",
+      "discovery_ratio": 0.5879,
+      "discovery_change_7d": -3.6,
+      "status": "waiting"
+    },
+    "UMP-45 | 动摇 (久经沙场)::C5": {
+      "name": "UMP-45 | 动摇 (久经沙场)",
+      "platform": "C5",
+      "steam_url": "https://steamcommunity.com/market/search?appid=730&q=UMP-45%20%7C%20%E5%8A%A8%E6%91%87%20%28%E4%B9%85%E7%BB%8F%E6%B2%99%E5%9C%BA%29",
+      "first_seen": "2026-09-09T08:22:43.281158+00:00",
+      "unlock_at": "2026-09-16T08:22:43.281151+00:00",
+      "discovery_ratio": 0.5909,
+      "discovery_change_7d": -5.8,
+      "status": "waiting"
+    },
+    "女巫追猎::BUFF": {
+      "name": "女巫追猎",
+      "platform": "BUFF",
+      "steam_url": "https://steamcommunity.com/market/search?appid=730&q=%E5%A5%B3%E5%B7%AB%E8%BF%BD%E7%8C%8E",
+      "first_seen": "2026-09-09T08:22:43.902359+00:00",
+      "unlock_at": "2026-09-16T08:22:43.902351+00:00",
+      "discovery_ratio": 0.5957,
+      "discovery_change_7d": -8.5,
+      "status": "waiting"
+    },
+    "M249 | 阿兹特克 (久经沙场)::BUFF": {
+      "name": "M249 | 阿兹特克 (久经沙场)",
+      "platform": "BUFF",
+      "steam_url": "https://steamcommunity.com/market/search?appid=730&q=M249%20%7C%20%E9%98%BF%E5%85%B9%E7%89%B9%E5%85%8B%20%28%E4%B9%85%E7%BB%8F%E6%B2%99%E5%9C%BA%29",
+      "first_seen": "2026-09-09T08:22:44.512214+00:00",
+      "unlock_at": "2026-09-16T08:22:44.512206+00:00",
+      "discovery_ratio": 0.5975,
+      "discovery_change_7d": -3.68,
+      "status": "waiting"
+    },
+    "SCAR-20 | 蓝图 (久经沙场)::BUFF": {
+      "name": "SCAR-20 | 蓝图 (久经沙场)",
+      "platform": "BUFF",
+      "steam_url": "https://steamcommunity.com/market/search?appid=730&q=SCAR-20%20%7C%20%E8%93%9D%E5%9B%BE%20%28%E4%B9%85%E7%BB%8F%E6%B2%99%E5%9C%BA%29",
+      "first_seen": "2026-09-09T08:22:45.166614+00:00",
+      "unlock_at": "2026-09-16T08:22:45.166607+00:00",
+      "discovery_ratio": 0.6006,
+      "discovery_change_7d": -5.22,
+      "status": "waiting"
+    },
+    "印花 | 蛛网::BUFF": {
+      "name": "印花 | 蛛网",
+      "platform": "BUFF",
+      "steam_url": "https://steamcommunity.com/market/search?appid=730&q=%E5%8D%B0%E8%8A%B1%20%7C%20%E8%9B%9B%E7%BD%91",
+      "first_seen": "2026-09-09T08:22:45.790281+00:00",
+      "unlock_at": "2026-09-16T08:22:45.790273+00:00",
+      "discovery_ratio": 0.6093,
+      "discovery_change_7d": -5.48,
+      "status": "waiting"
+    },
+    "全径之幸::ECO": {
+      "name": "全径之幸",
+      "platform": "ECO",
+      "steam_url": "https://steamcommunity.com/market/search?appid=730&q=%E5%85%A8%E5%BE%84%E4%B9%8B%E5%B9%B8",
+      "first_seen": "2026-09-09T08:22:46.428411+00:00",
+      "unlock_at": "2026-09-16T08:22:46.428403+00:00",
+      "discovery_ratio": 0.6099,
+      "discovery_change_7d": -4.41,
+      "status": "waiting"
+    },
+    "MP7 | 恶作剧 (战痕累累)::BUFF": {
+      "name": "MP7 | 恶作剧 (战痕累累)",
+      "platform": "BUFF",
+      "steam_url": "https://steamcommunity.com/market/search?appid=730&q=MP7%20%7C%20%E6%81%B6%E4%BD%9C%E5%89%A7%20%28%E6%88%98%E7%97%95%E7%B4%AF%E7%B4%AF%29",
+      "first_seen": "2026-09-09T08:22:47.061370+00:00",
+      "unlock_at": "2026-09-16T08:22:47.061362+00:00",
+      "discovery_ratio": 0.6133,
+      "discovery_change_7d": -5.13,
+      "status": "waiting"
+    },
+    "印花 | Boom（全息）| 2020 RMR::IGXE": {
+      "name": "印花 | Boom（全息）| 2020 RMR",
+      "platform": "IGXE",
+      "steam_url": "https://steamcommunity.com/market/search?appid=730&q=%E5%8D%B0%E8%8A%B1%20%7C%20Boom%EF%BC%88%E5%85%A8%E6%81%AF%EF%BC%89%7C%202020%20RMR",
+      "first_seen": "2026-09-09T08:22:47.682975+00:00",
+      "unlock_at": "2026-09-16T08:22:47.682967+00:00",
+      "discovery_ratio": 0.6173,
+      "discovery_change_7d": -3.2,
+      "status": "waiting"
+    },
+    "XM1014 | 滑流 (久经沙场)::C5": {
+      "name": "XM1014 | 滑流 (久经沙场)",
+      "platform": "C5",
+      "steam_url": "https://steamcommunity.com/market/search?appid=730&q=XM1014%20%7C%20%E6%BB%91%E6%B5%81%20%28%E4%B9%85%E7%BB%8F%E6%B2%99%E5%9C%BA%29",
+      "first_seen": "2026-09-09T08:22:48.306556+00:00",
+      "unlock_at": "2026-09-16T08:22:48.306549+00:00",
+      "discovery_ratio": 0.6179,
+      "discovery_change_7d": -4.62,
+      "status": "waiting"
+    },
+    "SG 553 | 重金属摇滚 (破损不堪)::BUFF": {
+      "name": "SG 553 | 重金属摇滚 (破损不堪)",
+      "platform": "BUFF",
+      "steam_url": "https://steamcommunity.com/market/search?appid=730&q=SG%20553%20%7C%20%E9%87%8D%E9%87%91%E5%B1%9E%E6%91%87%E6%BB%9A%20%28%E7%A0%B4%E6%8D%9F%E4%B8%8D%E5%A0%AA%29",
+      "first_seen": "2026-09-09T08:22:49.003520+00:00",
+      "unlock_at": "2026-09-16T08:22:49.003513+00:00",
+      "discovery_ratio": 0.6184,
+      "discovery_change_7d": -3.03,
+      "status": "waiting"
+    },
+    "M4A1 消音型 | 泥斑迷彩 (久经沙场)::BUFF": {
+      "name": "M4A1 消音型 | 泥斑迷彩 (久经沙场)",
+      "platform": "BUFF",
+      "steam_url": "https://steamcommunity.com/market/search?appid=730&q=M4A1%20%E6%B6%88%E9%9F%B3%E5%9E%8B%20%7C%20%E6%B3%A5%E6%96%91%E8%BF%B7%E5%BD%A9%20%28%E4%B9%85%E7%BB%8F%E6%B2%99%E5%9C%BA%29",
+      "first_seen": "2026-09-09T08:22:49.627967+00:00",
+      "unlock_at": "2026-09-16T08:22:49.627960+00:00",
+      "discovery_ratio": 0.6198,
+      "discovery_change_7d": -5.37,
+      "status": "waiting"
+    },
+    "印花 | Team Liquid（全息）| 2023年巴黎锦标赛::UUYP": {
+      "name": "印花 | Team Liquid（全息）| 2023年巴黎锦标赛",
+      "platform": "UUYP",
+      "steam_url": "https://steamcommunity.com/market/search?appid=730&q=%E5%8D%B0%E8%8A%B1%20%7C%20Team%20Liquid%EF%BC%88%E5%85%A8%E6%81%AF%EF%BC%89%7C%202023%E5%B9%B4%E5%B7%B4%E9%BB%8E%E9%94%A6%E6%A0%87%E8%B5%9B",
+      "first_seen": "2026-09-09T08:22:50.248562+00:00",
+      "unlock_at": "2026-09-16T08:22:50.248555+00:00",
+      "discovery_ratio": 0.6214,
+      "discovery_change_7d": -9.66,
+      "status": "waiting"
+    },
+    "沙漠之鹰 | 后发制人 (久经沙场)::BUFF": {
+      "name": "沙漠之鹰 | 后发制人 (久经沙场)",
+      "platform": "BUFF",
+      "steam_url": "https://steamcommunity.com/market/search?appid=730&q=%E6%B2%99%E6%BC%A0%E4%B9%8B%E9%B9%B0%20%7C%20%E5%90%8E%E5%8F%91%E5%88%B6%E4%BA%BA%20%28%E4%B9%85%E7%BB%8F%E6%B2%99%E5%9C%BA%29",
+      "first_seen": "2026-09-09T08:22:50.881986+00:00",
+      "unlock_at": "2026-09-16T08:22:50.881978+00:00",
+      "discovery_ratio": 0.6221,
+      "discovery_change_7d": -9.5,
+      "status": "waiting"
+    },
+    "截短霰弹枪 | 夜百合 (久经沙场)::BUFF": {
+      "name": "截短霰弹枪 | 夜百合 (久经沙场)",
+      "platform": "BUFF",
+      "steam_url": "https://steamcommunity.com/market/search?appid=730&q=%E6%88%AA%E7%9F%AD%E9%9C%B0%E5%BC%B9%E6%9E%AA%20%7C%20%E5%A4%9C%E7%99%BE%E5%90%88%20%28%E4%B9%85%E7%BB%8F%E6%B2%99%E5%9C%BA%29",
+      "first_seen": "2026-09-09T08:22:51.500141+00:00",
+      "unlock_at": "2026-09-16T08:22:51.500134+00:00",
+      "discovery_ratio": 0.6226,
+      "discovery_change_7d": -6.98,
+      "status": "waiting"
+    },
+    "沙漠之鹰 | 科林斯遗产 (久经沙场)::BUFF": {
+      "name": "沙漠之鹰 | 科林斯遗产 (久经沙场)",
+      "platform": "BUFF",
+      "steam_url": "https://steamcommunity.com/market/search?appid=730&q=%E6%B2%99%E6%BC%A0%E4%B9%8B%E9%B9%B0%20%7C%20%E7%A7%91%E6%9E%97%E6%96%AF%E9%81%97%E4%BA%A7%20%28%E4%B9%85%E7%BB%8F%E6%B2%99%E5%9C%BA%29",
+      "first_seen": "2026-09-09T08:22:52.123917+00:00",
+      "unlock_at": "2026-09-16T08:22:52.123910+00:00",
+      "discovery_ratio": 0.6228,
+      "discovery_change_7d": -9.39,
+      "status": "waiting"
+    }
+  }
 }
