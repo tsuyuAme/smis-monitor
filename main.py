@@ -652,6 +652,7 @@ def smis_item_url(item):
 
 
 def telegram_send(bot_token, chat_id, text):
+    """发送消息，返回 message_id。"""
     url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
     r = requests.post(
         url,
@@ -664,6 +665,241 @@ def telegram_send(bot_token, chat_id, text):
         timeout=20,
     )
     r.raise_for_status()
+    data = r.json()
+    if not data.get("ok"):
+        raise RuntimeError(f"Telegram API: {data}")
+    return data.get("result", {}).get("message_id")
+
+
+def telegram_get_updates(bot_token, offset=None, timeout=0):
+    url = f"https://api.telegram.org/bot{bot_token}/getUpdates"
+    params = {"timeout": timeout}
+    if offset is not None:
+        params["offset"] = offset
+    r = requests.get(url, params=params, timeout=max(25, timeout + 5))
+    r.raise_for_status()
+    data = r.json()
+    if not data.get("ok"):
+        raise RuntimeError(f"getUpdates: {data}")
+    return data.get("result") or []
+
+
+def parse_buy_time_and_indices(text, msg_date_ts=None):
+    """
+    解析购买时间 + 序号。
+    时间优先级：
+      1) 消息正文里写的时间（写在「已买」前面）
+      2) Telegram 消息时间 msg.date（用户点发送的时间）
+    支持示例：
+      已买1
+      已买1,3
+      15:30 已买1
+      09-10 15:30 已买1
+      2026-09-10 15:30 已买1
+      2026/9/10 15:30 已买1,2
+    返回 (bought_at: datetime UTC, indices: list[int], time_source: str)
+    """
+    if not text:
+        return None, [], ""
+    raw = re.sub(r"@\w+", "", text.strip()).strip()
+    if not re.search(r"已买|买入|买了|(?:^|\s)买(?:\s|$|\d)", raw):
+        return None, [], ""
+
+    # 上海时区解释「本地时间」
+    try:
+        from zoneinfo import ZoneInfo
+        tz = ZoneInfo("Asia/Shanghai")
+    except Exception:
+        tz = timezone(timedelta(hours=8))
+
+    bought_at = None
+    time_source = ""
+    work = raw
+
+    # 完整日期时间
+    patterns = [
+        (r"(?P<y>\d{4})[-/](?P<m>\d{1,2})[-/](?P<d>\d{1,2})[\sT]+(?P<H>\d{1,2}):(?P<M>\d{2})(?::(?P<S>\d{2}))?", "manual"),
+        (r"(?P<m>\d{1,2})[-/](?P<d>\d{1,2})[\s]+(?P<H>\d{1,2}):(?P<M>\d{2})(?::(?P<S>\d{2}))?", "manual_md"),
+        (r"(?<![\d])(?P<H>\d{1,2}):(?P<M>\d{2})(?::(?P<S>\d{2}))?(?=\s*已买|\s*买)", "manual_hm"),
+    ]
+    for pat, kind in patterns:
+        m = re.search(pat, work)
+        if not m:
+            continue
+        gd = m.groupdict()
+        now_local = datetime.now(tz)
+        try:
+            y = int(gd["y"]) if gd.get("y") else now_local.year
+            if kind == "manual_md":
+                mo, d = int(gd["m"]), int(gd["d"])
+            elif kind == "manual_hm":
+                mo, d = now_local.month, now_local.day
+            else:
+                mo, d = int(gd["m"]), int(gd["d"])
+            H = int(gd["H"])
+            M = int(gd["M"])
+            S = int(gd["S"] or 0)
+            local_dt = datetime(y, mo, d, H, M, S, tzinfo=tz)
+            # 仅写时刻且比「现在」晚很多（跨日）：若大于当前 6 小时，视为昨天
+            if kind == "manual_hm" and local_dt > now_local + timedelta(hours=6):
+                local_dt = local_dt - timedelta(days=1)
+            bought_at = local_dt.astimezone(UTC)
+            time_source = "text"
+            # 从文本中去掉这段时间，避免把年/月/日当成序号
+            work = work[: m.start()] + " " + work[m.end() :]
+            break
+        except Exception:
+            continue
+
+    if bought_at is None and msg_date_ts is not None:
+        try:
+            bought_at = datetime.fromtimestamp(int(msg_date_ts), tz=UTC)
+            time_source = "tg_message"
+        except Exception:
+            bought_at = now_utc()
+            time_source = "now"
+    if bought_at is None:
+        bought_at = now_utc()
+        time_source = "now"
+
+    # 序号：只取「买」后面的数字，避免日期残渣
+    tail = work
+    m_buy = re.search(r"(已买|买入|买了|(?:^|\s)买)\s*(.*)$", work)
+    if m_buy:
+        tail = m_buy.group(2) or ""
+    nums = re.findall(r"\d+", tail)
+    # 若尾部没有数字，再在全文买字后找
+    if not nums:
+        nums = re.findall(r"(?:已买|买入|买了|买)\s*(\d+)", work)
+    indices = []
+    seen = set()
+    for n in nums:
+        try:
+            i = int(n)
+        except Exception:
+            continue
+        if 1 <= i <= 50 and i not in seen:
+            seen.add(i)
+            indices.append(i)
+    return bought_at, indices, time_source
+
+
+def process_buy_replies(token, chat_id, state, hold_days):
+    """处理「已买N」：买入时间优先正文，其次 TG 发送时间。"""
+    offset = state.get("tg_update_offset")
+    try:
+        updates = telegram_get_updates(token, offset=offset)
+    except Exception as e:
+        print(f"[warn] 拉取 TG 消息失败: {e}")
+        return 0
+
+    last_batch = state.get("last_batch") or []
+    batch_by_msg = state.get("batch_by_msg") or {}
+    candidates = state.setdefault("candidates", {})
+    marked = 0
+    max_update_id = None
+
+    for upd in updates:
+        uid = upd.get("update_id")
+        if uid is not None:
+            max_update_id = uid if max_update_id is None else max(max_update_id, uid)
+
+        msg = upd.get("message") or upd.get("edited_message")
+        if not msg:
+            continue
+        chat = msg.get("chat") or {}
+        if str(chat.get("id")) != str(chat_id):
+            continue
+        text = msg.get("text") or ""
+        bought_at, indices, time_source = parse_buy_time_and_indices(
+            text, msg_date_ts=msg.get("date")
+        )
+        if not indices:
+            continue
+
+        batch = last_batch
+        reply = msg.get("reply_to_message") or {}
+        reply_id = reply.get("message_id")
+        if reply_id is not None and str(reply_id) in batch_by_msg:
+            batch = batch_by_msg[str(reply_id)]
+
+        if not batch:
+            try:
+                telegram_send(
+                    token,
+                    chat_id,
+                    "⚠️ 暂无榜单可标记。等推送 Top 后回复：\n"
+                    "<code>已买1</code>\n"
+                    "或带时间：<code>2026-09-10 15:30 已买1</code>",
+                )
+            except Exception:
+                pass
+            continue
+
+        unlock = bought_at + timedelta(days=hold_days)
+        names = []
+        for idx in indices:
+            if idx < 1 or idx > len(batch):
+                continue
+            entry = batch[idx - 1]
+            key = entry.get("key")
+            if not key:
+                continue
+            rec = candidates.get(key) or {}
+            rec.update(
+                {
+                    "name": entry.get("name") or rec.get("name"),
+                    "platform": entry.get("platform") or rec.get("platform"),
+                    "smis_url": entry.get("smis_url") or rec.get("smis_url"),
+                    "commodity_id": entry.get("commodity_id") or rec.get("commodity_id"),
+                    "steam_url": entry.get("steam_url") or rec.get("steam_url"),
+                    "status": "bought",
+                    "bought_at": bought_at.isoformat(),
+                    "unlock_at": unlock.isoformat(),
+                    "buy_time_source": time_source,
+                    "buy_index": idx,
+                }
+            )
+            candidates[key] = rec
+            names.append(f"{idx}. {rec.get('name')}")
+            marked += 1
+            print(
+                f"[tg] 已标记购买: {rec.get('name')}  "
+                f"bought={bought_at.isoformat()} ({time_source})  "
+                f"unlock={unlock.isoformat()}"
+            )
+
+        if names:
+            try:
+                # 展示用北京时间
+                try:
+                    from zoneinfo import ZoneInfo
+                    local = bought_at.astimezone(ZoneInfo("Asia/Shanghai"))
+                except Exception:
+                    local = bought_at + timedelta(hours=8)
+                local_s = local.strftime("%Y-%m-%d %H:%M")
+                unlock_s = (unlock.astimezone(local.tzinfo) if hasattr(local, "tzinfo") else unlock + timedelta(hours=8))
+                try:
+                    unlock_s = unlock.astimezone(ZoneInfo("Asia/Shanghai")).strftime("%Y-%m-%d %H:%M")
+                except Exception:
+                    unlock_s = (bought_at + timedelta(days=hold_days) + timedelta(hours=8)).strftime("%Y-%m-%d %H:%M")
+                src = {"text": "消息内时间", "tg_message": "TG发送时间", "now": "脚本处理时间"}.get(
+                    time_source, time_source
+                )
+                telegram_send(
+                    token,
+                    chat_id,
+                    f"✅ 已记录购买（{src} <b>{local_s}</b>）\n"
+                    f"约 <b>{hold_days:g}</b> 天后提醒（{unlock_s}）：\n"
+                    + "\n".join(names),
+                )
+            except Exception as e:
+                print(f"[warn] 确认消息失败: {e}")
+
+    if max_update_id is not None:
+        state["tg_update_offset"] = max_update_id + 1
+    return marked
+
 
 
 def discovery_batch_message(items, sale_method, hold_days):
@@ -690,6 +926,10 @@ def discovery_batch_message(items, sale_method, hold_days):
             f"   平台价 {pp} → 到手 {sb} · 量 {vol_s}"
         )
     lines.append("━━━━━━━━━━━━━━━━")
+    lines.append("买了请回复 Bot：")
+    lines.append("<code>已买1</code> 或 <code>已买1,3</code>（数字=上方序号）")
+    lines.append("可写时间：<code>09-10 15:30 已买1</code> 或 <code>15:30 已买1</code>")
+    lines.append("未写时间则用你在 TG 点发送的时间起算保护期。")
     lines.append('<a href="https://smis.club/exchange">打开挂刀行情</a>')
     return "\n".join(lines)
 
@@ -699,10 +939,12 @@ def mature_message(item, record, sale_method):
     ratio_text = f"{ratio:.4f}" if ratio is not None else "—"
     url = smis_item_url(item if item.get("name") else record)
     name = item.get("name", record.get("name"))
+    bought = record.get("bought_at") or "—"
     return (
-        "⏰ <b>7天保护期到期复核</b>\n\n"
+        "⏰ <b>购买保护期到期 · 可考虑上架</b>\n\n"
         f"<b><a href=\"{url}\">{name}</a></b>\n"
         f"平台：{item.get('platform', record.get('platform', '—'))}\n"
+        f"标记购买：{bought}\n"
         f"当前挂刀比例：<b>{ratio_text}</b>\n"
         f"当前7日涨跌：<b>{fmt_pct(item.get('change_7d'))}</b>\n"
         f"平台价：{fmt_money(item.get('platform_price'))}\n"
@@ -726,6 +968,15 @@ def run():
     sale_method = config.get("strategy", {}).get("sale_method", "Steam挂底价")
     hold_days = float(config.get("strategy", {}).get("hold_days", 7))
 
+    # 先处理 TG「已买」回复（不依赖本轮抓取）
+    try:
+        n_buy = process_buy_replies(token, chat_id, state, hold_days)
+        if n_buy:
+            print(f"[info] 本轮标记购买 {n_buy} 件")
+            save_json(DATA_FILE, state)
+    except Exception as e:
+        print(f"[warn] 处理已买回复异常: {e}")
+
     print("[info] 开始抓取...")
     rows = scrape_exchange(config)
     print(f"[info] 解析到 {len(rows)} 条有效商品")
@@ -733,7 +984,8 @@ def run():
     for i, r in enumerate(rows[:8]):
         print(
             f"  [{i+1}] {r['name'][:24]:24s}  ratio={r['ratio']:.4f}  "
-            f"7d={r['change_7d'] if r['change_7d'] is None else round(r['change_7d'], 2)}  vol={r['volume']}  plat={r['platform']}"
+            f"7d={r['change_7d'] if r['change_7d'] is None else round(r['change_7d'], 2)}  "
+            f"vol={r['volume']}  plat={r['platform']}"
         )
 
     by_key = {key_for(x): x for x in rows}
@@ -770,10 +1022,10 @@ def run():
     changed = False
     new_count = 0
 
+    # 仅登记发现，不自动开始 7 天（等用户「已买」）
     for item in qualified:
         key = key_for(item)
         if key not in candidates:
-            unlock = now_utc() + timedelta(days=hold_days)
             candidates[key] = {
                 "name": item["name"],
                 "platform": item["platform"],
@@ -781,33 +1033,57 @@ def run():
                 "smis_url": smis_item_url(item),
                 "commodity_id": item.get("commodity_id"),
                 "first_seen": now_utc().isoformat(),
-                "unlock_at": unlock.isoformat(),
-                "discovery_ratio": item["ratio"],
-                "discovery_change_7d": item["change_7d"],
-                "status": "waiting",
+                "status": "seen",
             }
             new_count += 1
             changed = True
+        else:
+            # 更新展示信息，但不要覆盖 bought
+            rec = candidates[key]
+            if rec.get("status") not in ("bought", "matured"):
+                rec["smis_url"] = smis_item_url(item)
+                rec["commodity_id"] = item.get("commodity_id") or rec.get("commodity_id")
 
-    # 只要有符合条件的，就推送 Top（最多 10），链接用 commodity/{id}
     batch = qualified[:10]
     if batch:
         try:
-            telegram_send(
+            msg_id = telegram_send(
                 token,
                 chat_id,
                 discovery_batch_message(batch, sale_method, hold_days),
             )
-            print(f"[tg] 已推送 Top {len(batch)}（本轮新发现 {new_count}）")
+            batch_entries = []
             for it in batch:
-                print(f"  → id={it.get('commodity_id')} {it['name']} {smis_item_url(it)}")
+                batch_entries.append(
+                    {
+                        "key": key_for(it),
+                        "name": it.get("name"),
+                        "platform": it.get("platform"),
+                        "smis_url": smis_item_url(it),
+                        "commodity_id": it.get("commodity_id"),
+                        "steam_url": it.get("steam_url"),
+                    }
+                )
+            state["last_batch"] = batch_entries
+            if msg_id is not None:
+                bmap = state.setdefault("batch_by_msg", {})
+                bmap[str(msg_id)] = batch_entries
+                # 只保留最近 20 条榜单消息
+                if len(bmap) > 20:
+                    for k in list(bmap.keys())[:-20]:
+                        bmap.pop(k, None)
+            changed = True
+            print(f"[tg] 已推送 Top {len(batch)}（本轮新登记 {new_count}）msg_id={msg_id}")
+            for it in batch:
+                print(f"  → id={it.get('commodity_id')} {it['name']}")
         except Exception as e:
             print(f"[error] Telegram 发送失败: {e}")
     else:
         print("[info] 无符合条件商品，不推送")
 
+    # 仅对「已买」且到期的条目提醒
     for key, record in list(candidates.items()):
-        if record.get("status") != "waiting":
+        if record.get("status") != "bought":
             continue
         try:
             unlock_at = datetime.fromisoformat(record["unlock_at"])
@@ -844,9 +1120,15 @@ def run():
     if changed:
         save_json(DATA_FILE, state)
 
-    summary = {"scraped": len(rows), "qualified": len(qualified), "new_candidates": new_count}
+    summary = {
+        "scraped": len(rows),
+        "qualified": len(qualified),
+        "new_candidates": new_count,
+        "bought_waiting": sum(1 for v in candidates.values() if v.get("status") == "bought"),
+    }
     print(json.dumps(summary, ensure_ascii=False))
     return summary
+
 
 
 if __name__ == "__main__":
