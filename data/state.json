@@ -335,6 +335,114 @@
       "discovery_ratio": 0.6452,
       "discovery_change_7d": -7.12,
       "status": "waiting"
+    },
+    "2020年不朽宝藏 I::BUFF": {
+      "name": "2020年不朽宝藏 I",
+      "platform": "BUFF",
+      "steam_url": "https://steamcommunity.com/market/search?appid=730&q=2020%E5%B9%B4%E4%B8%8D%E6%9C%BD%E5%AE%9D%E8%97%8F%20I",
+      "smis_url": "https://smis.club/commodity/45467",
+      "commodity_id": 45467,
+      "first_seen": "2026-09-09T21:00:00.553515+00:00",
+      "unlock_at": "2026-09-16T21:00:00.553501+00:00",
+      "discovery_ratio": 0.6387,
+      "discovery_change_7d": -5.47,
+      "status": "waiting"
+    },
+    "龙锻之耀::BUFF": {
+      "name": "龙锻之耀",
+      "platform": "BUFF",
+      "steam_url": "https://steamcommunity.com/market/search?appid=730&q=%E9%BE%99%E9%94%BB%E4%B9%8B%E8%80%80",
+      "smis_url": "https://smis.club/commodity/59128",
+      "commodity_id": 59128,
+      "first_seen": "2026-09-09T21:00:00.553527+00:00",
+      "unlock_at": "2026-09-16T21:00:00.553525+00:00",
+      "discovery_ratio": 0.6401,
+      "discovery_change_7d": -4.21,
+      "status": "waiting"
+    },
+    "战场荣耀击杀标语::BUFF": {
+      "name": "战场荣耀击杀标语",
+      "platform": "BUFF",
+      "steam_url": "https://steamcommunity.com/market/search?appid=730&q=%E6%88%98%E5%9C%BA%E8%8D%A3%E8%80%80%E5%87%BB%E6%9D%80%E6%A0%87%E8%AF%AD",
+      "smis_url": "https://smis.club/commodity/30635",
+      "commodity_id": 30635,
+      "first_seen": "2026-09-09T21:00:00.553531+00:00",
+      "unlock_at": "2026-09-16T21:00:00.553530+00:00",
+      "discovery_ratio": 0.6461,
+      "discovery_change_7d": -4.14,
+      "status": "waiting"
+    },
+    "沙漠之鹰（StatTrak™） | 巨蟒冲击 (久经沙场)::ECO": {
+      "name": "沙漠之鹰（StatTrak™） | 巨蟒冲击 (久经沙场)",
+      "platform": "ECO",
+      "steam_url": "https://steamcommunity.com/market/search?appid=730&q=%E6%B2%99%E6%BC%A0%E4%B9%8B%E9%B9%B0%EF%BC%88StatTrak%E2%84%A2%EF%BC%89%20%7C%20%E5%B7%A8%E8%9F%92%E5%86%B2%E5%87%BB%20%28%E4%B9%85%E7%BB%8F%E6%B2%99%E5%9C%BA%29",
+      "smis_url": "https://smis.club/commodity/65712",
+      "commodity_id": 65712,
+      "first_seen": "2026-09-09T21:00:00.553535+00:00",
+      "unlock_at": "2026-09-16T21:00:00.553534+00:00",
+      "discovery_ratio": 0.6468,
+      "discovery_change_7d": -3.2300000000000004,
+      "status": "waiting"
+    },
+    "嘲讽：萨满之舞::IGXE": {
+      "name": "嘲讽：萨满之舞",
+      "platform": "IGXE",
+      "steam_url": "https://steamcommunity.com/market/search?appid=730&q=%E5%98%B2%E8%AE%BD%EF%BC%9A%E8%90%A8%E6%BB%A1%E4%B9%8B%E8%88%9E",
+      "smis_url": "https://smis.club/commodity/57411",
+      "commodity_id": 57411,
+      "first_seen": "2026-09-09T23:19:43.131301+00:00",
+      "unlock_at": "2026-09-16T23:19:43.131289+00:00",
+      "discovery_ratio": 0.6224,
+      "discovery_change_7d": -5.66,
+      "status": "waiting"
+    },
+    "嘲讽：头晕目眩！::BUFF": {
+      "name": "嘲讽：头晕目眩！",
+      "platform": "BUFF",
+      "steam_url": "https://steamcommunity.com/market/search?appid=730&q=%E5%98%B2%E8%AE%BD%EF%BC%9A%E5%A4%B4%E6%99%95%E7%9B%AE%E7%9C%A9%EF%BC%81",
+      "smis_url": "https://smis.club/commodity/57376",
+      "commodity_id": 57376,
+      "first_seen": "2026-09-09T23:19:43.131348+00:00",
+      "unlock_at": "2026-09-16T23:19:43.131343+00:00",
+      "discovery_ratio": 0.6241,
+      "discovery_change_7d": -4.03,
+      "status": "waiting"
+    },
+    "2021年斯德哥尔摩锦标赛传奇组印花胶囊::ECO": {
+      "name": "2021年斯德哥尔摩锦标赛传奇组印花胶囊",
+      "platform": "ECO",
+      "steam_url": "https://steamcommunity.com/market/search?appid=730&q=2021%E5%B9%B4%E6%96%AF%E5%BE%B7%E5%93%A5%E5%B0%94%E6%91%A9%E9%94%A6%E6%A0%87%E8%B5%9B%E4%BC%A0%E5%A5%87%E7%BB%84%E5%8D%B0%E8%8A%B1%E8%83%B6%E5%9B%8A",
+      "smis_url": "https://smis.club/commodity/17166",
+      "commodity_id": 17166,
+      "first_seen": "2026-09-09T23:19:43.131362+00:00",
+      "unlock_at": "2026-09-16T23:19:43.131358+00:00",
+      "discovery_ratio": 0.6342,
+      "discovery_change_7d": -6.460000000000001,
+      "status": "waiting"
+    },
+    "宝蓝幽谷君王::BUFF": {
+      "name": "宝蓝幽谷君王",
+      "platform": "BUFF",
+      "steam_url": "https://steamcommunity.com/market/search?appid=730&q=%E5%AE%9D%E8%93%9D%E5%B9%BD%E8%B0%B7%E5%90%9B%E7%8E%8B",
+      "smis_url": "https://smis.club/commodity/54400",
+      "commodity_id": 54400,
+      "first_seen": "2026-09-09T23:19:43.131378+00:00",
+      "unlock_at": "2026-09-16T23:19:43.131375+00:00",
+      "discovery_ratio": 0.6425,
+      "discovery_change_7d": -4.71,
+      "status": "waiting"
+    },
+    "金玉之唤::BUFF": {
+      "name": "金玉之唤",
+      "platform": "BUFF",
+      "steam_url": "https://steamcommunity.com/market/search?appid=730&q=%E9%87%91%E7%8E%89%E4%B9%8B%E5%94%A4",
+      "smis_url": "https://smis.club/commodity/53265",
+      "commodity_id": 53265,
+      "first_seen": "2026-09-09T23:19:43.131387+00:00",
+      "unlock_at": "2026-09-16T23:19:43.131385+00:00",
+      "discovery_ratio": 0.6429,
+      "discovery_change_7d": -4.6,
+      "status": "waiting"
     }
   }
 }
