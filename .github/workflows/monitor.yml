@@ -2,9 +2,9 @@ name: SMIS monitor
 
 on:
   workflow_dispatch:
-  schedule:
-    # 每小时一次，UTC 第 17 分（避开整点）
-    - cron: "17 * * * *"
+  # schedule:
+  #   # 每小时一次，UTC 第 17 分（避开整点）
+  #   - cron: "17 * * * *"
 
 permissions:
   contents: write
