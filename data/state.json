@@ -443,6 +443,30 @@
       "discovery_ratio": 0.6429,
       "discovery_change_7d": -4.6,
       "status": "waiting"
+    },
+    "双鱼粉碎拳::C5": {
+      "name": "双鱼粉碎拳",
+      "platform": "C5",
+      "steam_url": "https://steamcommunity.com/market/search?appid=730&q=%E5%8F%8C%E9%B1%BC%E7%B2%89%E7%A2%8E%E6%8B%B3",
+      "smis_url": "https://smis.club/commodity/55082",
+      "commodity_id": 55082,
+      "first_seen": "2026-09-10T04:50:48.563590+00:00",
+      "unlock_at": "2026-09-17T04:50:48.563582+00:00",
+      "discovery_ratio": 0.6204,
+      "discovery_change_7d": -4.92,
+      "status": "waiting"
+    },
+    "格洛克 18 型（StatTrak™） | 圆影玉兔 (略有磨损)::BUFF": {
+      "name": "格洛克 18 型（StatTrak™） | 圆影玉兔 (略有磨损)",
+      "platform": "BUFF",
+      "steam_url": "https://steamcommunity.com/market/search?appid=730&q=%E6%A0%BC%E6%B4%9B%E5%85%8B%2018%20%E5%9E%8B%EF%BC%88StatTrak%E2%84%A2%EF%BC%89%20%7C%20%E5%9C%86%E5%BD%B1%E7%8E%89%E5%85%94%20%28%E7%95%A5%E6%9C%89%E7%A3%A8%E6%8D%9F%29",
+      "smis_url": "https://smis.club/commodity/9211",
+      "commodity_id": 9211,
+      "first_seen": "2026-09-10T04:50:48.563601+00:00",
+      "unlock_at": "2026-09-17T04:50:48.563599+00:00",
+      "discovery_ratio": 0.6397,
+      "discovery_change_7d": -9.5,
+      "status": "waiting"
     }
   }
 }
