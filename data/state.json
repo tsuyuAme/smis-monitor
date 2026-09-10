@@ -467,6 +467,30 @@
       "discovery_ratio": 0.6397,
       "discovery_change_7d": -9.5,
       "status": "waiting"
+    },
+    "落虹之弧::BUFF": {
+      "name": "落虹之弧",
+      "platform": "BUFF",
+      "steam_url": "https://steamcommunity.com/market/search?appid=730&q=%E8%90%BD%E8%99%B9%E4%B9%8B%E5%BC%A7",
+      "smis_url": "https://smis.club/commodity/58638",
+      "commodity_id": 58638,
+      "first_seen": "2026-09-10T09:49:17.261072+00:00",
+      "unlock_at": "2026-09-17T09:49:17.261062+00:00",
+      "discovery_ratio": 0.6329,
+      "discovery_change_7d": -3.54,
+      "status": "waiting"
+    },
+    "战场荣耀击杀标语::C5": {
+      "name": "战场荣耀击杀标语",
+      "platform": "C5",
+      "steam_url": "https://steamcommunity.com/market/search?appid=730&q=%E6%88%98%E5%9C%BA%E8%8D%A3%E8%80%80%E5%87%BB%E6%9D%80%E6%A0%87%E8%AF%AD",
+      "smis_url": "https://smis.club/commodity/30635",
+      "commodity_id": 30635,
+      "first_seen": "2026-09-10T09:49:17.261088+00:00",
+      "unlock_at": "2026-09-17T09:49:17.261085+00:00",
+      "discovery_ratio": 0.6443,
+      "discovery_change_7d": -5.66,
+      "status": "waiting"
     }
   }
 }
