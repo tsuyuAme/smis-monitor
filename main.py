@@ -16,6 +16,7 @@ SMIS 挂刀监控
 
 import json
 import os
+import time
 import re
 import sys
 from datetime import datetime, timedelta, timezone
@@ -300,6 +301,7 @@ def parse_rows(raw_rows):
 
 
 def scrape_exchange(config):
+    """低配 VPS 优化：仍完整走「填筛选 → 应用设置 → 用应用后的接口数据」。"""
     url = config.get("site", {}).get("url", "https://smis.club/exchange")
     wait_ms = int(config.get("site", {}).get("wait_ms", 8000))
     filters = config.get("filters", {})
@@ -315,311 +317,291 @@ def scrape_exchange(config):
     if setup_mode and manual_wait <= 0:
         manual_wait = 90
 
-    api_payloads = []
+    # SMIS_PERSISTENT=1 时用用户目录（本机过验证）；VPS 默认不用，省内存
+    use_persistent = os.getenv("SMIS_PERSISTENT", "").strip() in {"1", "true", "True", "yes", "YES"} or setup_mode
 
-    with sync_playwright() as p:
-        BROWSER_DIR.mkdir(parents=True, exist_ok=True)
-        context = p.chromium.launch_persistent_context(
-            user_data_dir=str(BROWSER_DIR),
-            headless=not headed,
-            viewport={"width": 1600, "height": 1400},
-            locale="zh-CN",
-            timezone_id="Asia/Shanghai",
-            args=[
-                "--no-sandbox",
-                "--disable-dev-shm-usage",      # Docker/小内存 VPS 必加
-                "--disable-gpu",
-                "--disable-software-rasterizer",
-                "--disable-extensions",
-                "--disable-background-networking",
-                "--disable-default-apps",
-                "--disable-sync",
-                "--disable-translate",
-                "--mute-audio",
-                "--no-first-run",
-                "--no-zygote",
-                "--renderer-process-limit=1",
-                "--js-flags=--max-old-space-size=256",
-            ],
-            user_agent=(
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/122.0.0.0 Safari/537.36"
-            ),
-        )
-        page = context.pages[0] if context.pages else context.new_page()
+    chrome_args = [
+        "--disable-blink-features=AutomationControlled",
+        "--disable-dev-shm-usage",
+        "--no-sandbox",
+        "--disable-gpu",
+        "--disable-software-rasterizer",
+        "--disable-extensions",
+        "--disable-background-networking",
+        "--disable-default-apps",
+        "--disable-sync",
+        "--disable-translate",
+        "--mute-audio",
+        "--no-first-run",
+        "--no-zygote",
+        "--renderer-process-limit=1",
+        "--js-flags=--max-old-space-size=192",
+    ]
+    ua = (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/122.0.0.0 Safari/537.36"
+    )
+    viewport = {"width": 900, "height": 700}
 
-        def on_response(resp):
-            try:
-                u = resp.url or ""
-                if "exchange" in u and ("/api/" in u or "commodity" in u):
-                    if resp.status == 200:
-                        try:
-                            data = resp.json()
-                            api_payloads.append(data)
-                            keys = list(data.keys()) if isinstance(data, dict) else type(data).__name__
-                            print(f"[info] 拦截接口 {resp.status}: {u[:90]}  keys={keys}")
-                        except Exception:
-                            txt = resp.text()[:200]
-                            print(f"[info] 接口非 JSON: {u[:60]} -> {txt}")
-                    else:
-                        print(f"[warn] 接口状态 {resp.status}: {u[:90]}")
-            except Exception:
-                pass
+    max_attempts = 2
+    last_err = None
 
-        page.on("response", on_response)
-
-        print(f"[info] 打开 {url}  (headed={headed}, manual_wait={manual_wait}s)")
-        page.goto(url, wait_until="domcontentloaded", timeout=90000)
+    for attempt in range(1, max_attempts + 1):
+        api_payloads = []
+        post_apply_payloads = []
+        apply_clicked = False
+        context = None
+        browser = None
 
         try:
-            page.wait_for_load_state("networkidle", timeout=20000)
-        except PlaywrightTimeoutError:
-            pass
-        page.wait_for_timeout(2000)
+            with sync_playwright() as p:
+                if use_persistent:
+                    BROWSER_DIR.mkdir(parents=True, exist_ok=True)
+                    context = p.chromium.launch_persistent_context(
+                        user_data_dir=str(BROWSER_DIR),
+                        headless=not headed,
+                        viewport=viewport,
+                        locale="zh-CN",
+                        timezone_id="Asia/Shanghai",
+                        args=chrome_args,
+                        user_agent=ua,
+                    )
+                    page = context.pages[0] if context.pages else context.new_page()
+                else:
+                    browser = p.chromium.launch(headless=not headed, args=chrome_args)
+                    context = browser.new_context(
+                        viewport=viewport,
+                        locale="zh-CN",
+                        timezone_id="Asia/Shanghai",
+                        user_agent=ua,
+                    )
+                    page = context.new_page()
 
-        if manual_wait > 0:
-            print(f"[info] 请在弹出的浏览器里完成验证码（如有），等待最多 {manual_wait} 秒...")
-            print("[info] 看到表格有数据后会提前继续")
-            for _w in range(manual_wait):
-                page.wait_for_timeout(1000)
-                if api_payloads:
-                    # 检查是否真有列表数据
-                    ok = False
-                    for pl in api_payloads:
-                        if items_from_api_payload(pl):
-                            ok = True
-                            break
-                    if ok:
-                        print(f"[info] 已拿到有效接口数据，提前结束等待 (第 {_w+1} 秒)")
-                        break
-                ready = page.evaluate("""() => {
-                    const trs = document.querySelectorAll('table tbody tr, .el-table__body tr');
-                    for (const tr of trs) {
-                        const t = (tr.innerText || '').trim();
-                        if (t && !t.includes('No Data') && t.length > 15) return true;
-                    }
-                    return false;
-                }""")
-                if ready and _w >= 5:
-                    print(f"[info] DOM 已有数据，提前结束等待 (第 {_w+1} 秒)")
-                    break
-
-        # 设置筛选（用 Playwright 精确定位「价格区间」「日成交量」旁的输入框）
-        print(f"[info] 设置筛选: 价格 {price_min}~{price_max}, 成交量>={page_volume}")
-
-        def fill_near_label(label_text, values):
-            """找到包含 label_text 的那一行，填写其中的 input。"""
-            # 精确文本节点
-            loc = page.locator(f"text={label_text}").first
-            if loc.count() == 0:
-                loc = page.get_by_text(label_text, exact=False).first
-            # 向上找较近的容器
-            row = loc.locator("xpath=ancestor::div[contains(@class,'el-') or contains(@class,'form') or contains(@class,'item')][1]")
-            if row.count() == 0:
-                row = loc.locator("xpath=ancestor::div[2]")
-            inputs = row.locator("input:not([type='radio']):not([type='checkbox']):not([type='hidden'])")
-            n = inputs.count()
-            print(f"[info] 标签「{label_text}」附近 input 数量: {n}")
-            for i, v in enumerate(values):
-                if i >= n:
-                    break
-                el = inputs.nth(i)
-                el.click(timeout=3000)
-                el.fill("")
-                el.fill(str(v))
-                el.press("Tab")
-            return n
-
-        try:
-            # 先点「重置设置」避免沿用错误缓存
-            try:
-                rst = page.locator("button:has-text('重置设置')")
-                if rst.count() > 0:
-                    rst.first.click(timeout=2000)
-                    page.wait_for_timeout(800)
-                    print("[info] 已点重置设置")
-            except Exception:
-                pass
-
-            n_price = fill_near_label("价格区间", [price_min, price_max])
-            if n_price < 2:
-                # 兜底：页面上所有可见 number/text 输入，按顺序找价格行
-                print("[warn] 价格区间定位失败，尝试全局输入框")
-                all_in = page.locator("input.el-input__inner, input[type='number'], input[type='text']")
-                vals = []
-                for i in range(min(all_in.count(), 12)):
+                def on_response(resp):
                     try:
-                        vis = all_in.nth(i).is_visible()
-                        if vis:
-                            vals.append(i)
+                        u = resp.url or ""
+                        if "commodity/exchange" not in u and not (
+                            "exchange" in u and "/api/" in u
+                        ):
+                            return
+                        if resp.status != 200:
+                            print(f"[warn] 接口状态 {resp.status}: {u[:90]}")
+                            return
+                        data = resp.json()
+                        api_payloads.append(data)
+                        if apply_clicked:
+                            post_apply_payloads.append(data)
+                        keys = list(data.keys()) if isinstance(data, dict) else type(data).__name__
+                        tag = "应用后" if apply_clicked else "应用前"
+                        print(f"[info] 拦截接口({tag}) {resp.status}: {u[:80]} keys={keys}")
                     except Exception:
                         pass
-                # 通常价格两个 + 成交量一个
-                if len(vals) >= 2:
-                    all_in.nth(vals[0]).fill(str(price_min))
-                    all_in.nth(vals[1]).fill(str(price_max))
-                    if len(vals) >= 3:
-                        all_in.nth(vals[2]).fill(str(page_volume))
-            else:
-                fill_near_label("日成交量", [page_volume])
 
-            # 读回当前值确认
-            try:
-                shown = page.evaluate("""() => {
-                    const pick = (label) => {
-                        const nodes = Array.from(document.querySelectorAll('div,span,label'));
-                        for (const n of nodes) {
-                            if ((n.childNodes[0] && n.childNodes[0].textContent || n.textContent || '').trim().startsWith(label)) {
-                                let p = n;
-                                for (let i=0;i<5 && p;i++, p=p.parentElement) {
+                page.on("response", on_response)
+
+                print(
+                    f"[info] 打开 {url} (attempt={attempt}/{max_attempts}, "
+                    f"headed={headed}, persistent={use_persistent})"
+                )
+                page.goto(url, wait_until="domcontentloaded", timeout=90000)
+                try:
+                    page.wait_for_load_state("networkidle", timeout=15000)
+                except Exception:
+                    pass
+                page.wait_for_timeout(1500)
+
+                if manual_wait > 0:
+                    print(f"[info] 手动验证等待最多 {manual_wait}s...")
+                    for _w in range(manual_wait):
+                        page.wait_for_timeout(1000)
+                        if any(items_from_api_payload(pl) for pl in api_payloads):
+                            print(f"[info] 已有接口数据，提前继续 ({_w+1}s)")
+                            break
+
+                # ---------- 填筛选 ----------
+                print(f"[info] 设置筛选: 价格 {price_min}~{price_max}, 成交量>={page_volume}")
+
+                def fill_near_label(label_text, values):
+                    loc = page.get_by_text(label_text, exact=False).first
+                    row = loc.locator(
+                        "xpath=ancestor::div[contains(@class,'el-') or contains(@class,'form') or contains(@class,'item')][1]"
+                    )
+                    if row.count() == 0:
+                        row = loc.locator("xpath=ancestor::div[2]")
+                    inputs = row.locator(
+                        "input:not([type='radio']):not([type='checkbox']):not([type='hidden'])"
+                    )
+                    n = inputs.count()
+                    print(f"[info] 标签「{label_text}」附近 input 数量: {n}")
+                    for i, v in enumerate(values):
+                        if i >= n:
+                            break
+                        el = inputs.nth(i)
+                        el.click(timeout=3000)
+                        el.fill("")
+                        el.fill(str(v))
+                        el.press("Tab")
+                    return n
+
+                try:
+                    try:
+                        rst = page.locator("button:has-text('重置设置')")
+                        if rst.count() > 0:
+                            rst.first.click(timeout=2000)
+                            page.wait_for_timeout(600)
+                            print("[info] 已点重置设置")
+                    except Exception:
+                        pass
+
+                    n_price = fill_near_label("价格区间", [price_min, price_max])
+                    if n_price < 2:
+                        print("[warn] 价格区间定位失败，尝试 el-input")
+                        all_in = page.locator("input.el-input__inner")
+                        vis = []
+                        for i in range(min(all_in.count(), 12)):
+                            try:
+                                if all_in.nth(i).is_visible():
+                                    vis.append(i)
+                            except Exception:
+                                pass
+                        if len(vis) >= 2:
+                            all_in.nth(vis[0]).fill(str(price_min))
+                            all_in.nth(vis[1]).fill(str(price_max))
+                            if len(vis) >= 3:
+                                all_in.nth(vis[2]).fill(str(page_volume))
+                    else:
+                        fill_near_label("日成交量", [page_volume])
+
+                    try:
+                        shown = page.evaluate(
+                            """() => {
+                            const pick = (label) => {
+                              const nodes = Array.from(document.querySelectorAll('div,span,label'));
+                              for (const n of nodes) {
+                                const t = (n.textContent || '').trim();
+                                if (t.startsWith(label) || t.includes(label)) {
+                                  let p = n;
+                                  for (let i=0;i<5 && p;i++, p=p.parentElement) {
                                     const ins = Array.from(p.querySelectorAll('input')).filter(el => {
-                                        const t=(el.type||'').toLowerCase();
-                                        return !['radio','checkbox','hidden'].includes(t);
+                                      const ty=(el.type||'').toLowerCase();
+                                      return !['radio','checkbox','hidden'].includes(ty);
                                     });
                                     if (ins.length) return ins.map(el => el.value);
+                                  }
                                 }
-                            }
-                        }
-                        return [];
-                    };
-                    return { price: pick('价格'), volume: pick('日成交') };
-                }""")
-                print(f"[info] 读回输入框: {shown}")
-            except Exception as e:
-                print(f"[warn] 读回失败: {e}")
-        except Exception as e:
-            print(f"[warn] 设置筛选失败: {e}")
+                              }
+                              return [];
+                            };
+                            return { price: pick('价格'), volume: pick('日成交') };
+                            }"""
+                        )
+                        print(f"[info] 读回输入框: {shown}")
+                    except Exception as e:
+                        print(f"[warn] 读回失败: {e}")
+                except Exception as e:
+                    print(f"[warn] 设置筛选失败: {e}")
+                    raise
 
-        page.wait_for_timeout(500)
+                page.wait_for_timeout(400)
 
-        for text in ["应用设置", "应用"]:
-            btn = page.locator(f"button:has-text('{text}')")
-            if btn.count() > 0:
+                # ---------- 应用设置（之后的接口才是筛选后结果）----------
+                clicked = False
+                for text in ["应用设置", "应用"]:
+                    btn = page.locator(f"button:has-text('{text}')")
+                    if btn.count() > 0:
+                        try:
+                            # 清空「应用前」干扰：只认应用后的包
+                            post_apply_payloads.clear()
+                            apply_clicked = True
+                            btn.first.click(timeout=3000)
+                            print(f"[info] 已点击「{text}」")
+                            clicked = True
+                            break
+                        except Exception as e:
+                            print(f"[warn] 点击 {text} 失败: {e}")
+                if not clicked:
+                    print("[warn] 未找到应用按钮，仍等待接口...")
+                    apply_clicked = True
+
+                # ---------- 等待「应用后」接口 ----------
+                print("[info] 等待筛选后的接口数据...")
+                got = []
+                for i in range(25):
+                    try:
+                        page.wait_for_timeout(800)
+                    except Exception as e:
+                        print(f"[warn] 等待中页面异常: {e}")
+                        break
+                    if post_apply_payloads:
+                        for pl in post_apply_payloads:
+                            part = items_from_api_payload(pl)
+                            if part:
+                                got = part
+                                break
+                        if got:
+                            print(f"[info] 应用后接口解析到 {len(got)} 条 (第 {i+1} 次等待)")
+                            break
+                    # 若应用后没有新包但应用前有，有时站点不重新请求——再点一次应用
+                    if i in (8, 16) and not post_apply_payloads:
+                        try:
+                            page.locator("button:has-text('应用设置')").first.click(timeout=1500)
+                            print("[info] 再次点击应用设置")
+                        except Exception:
+                            pass
+
+                # 兜底：只有应用前数据时也用（并打日志）
+                if not got:
+                    for pl in reversed(api_payloads):
+                        part = items_from_api_payload(pl)
+                        if part:
+                            got = part
+                            print(
+                                f"[warn] 未捕获到应用后接口，暂用已有数据 {len(got)} 条"
+                                "（可能未重新请求）"
+                            )
+                            break
+
+                # 尽快关浏览器释放内存
                 try:
-                    btn.first.click(timeout=3000)
-                    print(f"[info] 已点击「{text}」")
-                    break
+                    context.close()
                 except Exception:
-                    continue
-
-        print("[info] 等待数据...")
-        for attempt in range(20):
-            page.wait_for_timeout(1000)
-            if api_payloads:
-                print(f"[info] 已拦截到 {len(api_payloads)} 个接口响应")
-                break
-            ready = page.evaluate(
-                """() => {
-                    const trs = document.querySelectorAll('table tbody tr, .el-table__body tr, .el-table__row');
-                    for (const tr of trs) {
-                        const t = (tr.innerText || '').trim();
-                        if (t && !t.includes('No Data') && t.length > 15 && /\\d/.test(t)) return true;
-                    }
-                    return false;
-                }"""
-            )
-            if ready:
-                print(f"[info] DOM 检测到数据行 (attempt {attempt+1})")
-                break
-            if attempt in (5, 10, 15):
-                print(f"[info] 等待中... ({attempt+1}/20)  若有验证码请在窗口中完成")
+                    pass
                 try:
-                    page.locator("button:has-text('应用设置')").first.click(timeout=1000)
+                    if browser:
+                        browser.close()
                 except Exception:
                     pass
 
-        page.wait_for_timeout(max(1000, wait_ms // 3))
+                if got:
+                    return got
 
-        no_data = page.evaluate(r"""() => {
-            const body = document.body.innerText || '';
-            return body.includes('No Data') && !/0\.\d{2,}/.test(body);
-        }""")
-        if no_data and not api_payloads:
-            print("[warn] 页面 No Data，尝试重置筛选后重新加载")
+                # DOM 兜底（尽量不用）
+                print("[warn] 接口无有效列表，尝试结束本轮")
+                last_err = RuntimeError("无有效商品数据")
+        except Exception as e:
+            last_err = e
+            print(f"[error] 第 {attempt} 次尝试失败: {e}")
             try:
-                page.locator("button:has-text('重置设置')").first.click(timeout=2000)
-                page.wait_for_timeout(600)
-                page.locator("button:has-text('应用设置')").first.click(timeout=2000)
-                page.wait_for_timeout(3500)
-            except Exception as e:
-                print(f"[warn] 重置失败: {e}")
-
-        # 优先用 API 数据
-        items = []
-        for payload in api_payloads:
-            part = items_from_api_payload(payload)
-            items.extend(part)
-            if not part:
-                try:
-                    DEBUG_DIR.mkdir(parents=True, exist_ok=True)
-                    (DEBUG_DIR / "last_api.json").write_text(
-                        json.dumps(payload, ensure_ascii=False, indent=2)[:80000], "utf-8"
-                    )
-                    print("[debug] 已保存 last_api.json 供分析字段")
-                except Exception as e:
-                    print(f"[debug] 保存 API 失败: {e}")
-        if items:
-            print(f"[info] 从 API 解析到 {len(items)} 条")
-            context.close()
-            return items
-
-        # 退回 DOM
-        extracted = page.evaluate(
-            """() => {
-                const clean = (s) => (s || '').replace(/\\s+/g, ' ').trim();
-                let headers = [];
-                const ths = document.querySelectorAll('table thead th, .el-table__header th');
-                if (ths.length) headers = Array.from(ths).map(th => clean(th.innerText));
-                const rowSelectors = [
-                    'table tbody tr', '.el-table__body-wrapper tbody tr',
-                    '.el-table__body tr', '.el-table__row', 'table tr'
-                ];
-                let rows = [];
-                for (const sel of rowSelectors) {
-                    const good = [];
-                    for (const el of document.querySelectorAll(sel)) {
-                        if (el.querySelector('th')) continue;
-                        const cells = Array.from(el.querySelectorAll('td, .el-table__cell'));
-                        let texts = cells.length >= 4
-                            ? cells.map(c => clean(c.innerText))
-                            : clean(el.innerText).split('\\n').map(clean).filter(Boolean);
-                        const joined = texts.join(' ');
-                        if (!joined || joined.includes('No Data') || joined.length < 8 || !/\\d/.test(joined))
-                            continue;
-                        good.push(texts);
-                    }
-                    if (good.length >= 3) { rows = good; break; }
-                    if (good.length > rows.length) rows = good;
-                }
-                return { headers, rows, rowCount: rows.length };
-            }"""
-        )
-
-        # 调试：保存页面快照
-        if not extracted.get("rowCount"):
+                if context:
+                    context.close()
+            except Exception:
+                pass
             try:
-                DEBUG_DIR.mkdir(parents=True, exist_ok=True)
-                snap = DEBUG_DIR / "last_page.html"
-                snap.write_text(page.content(), "utf-8")
-                page.screenshot(path=str(DEBUG_DIR / "last_page.png"), full_page=True)
-                print(f"[warn] 无数据，已保存调试文件到 {DEBUG_DIR}")
-            except Exception as e:
-                print(f"[warn] 保存调试文件失败: {e}")
+                if browser:
+                    browser.close()
+            except Exception:
+                pass
+            if attempt < max_attempts:
+                print("[info] 1.5s 后重试...")
+                time.sleep(1.5)
 
-        context.close()
+    if last_err:
+        raise last_err
+    return []
 
-    headers = extracted.get("headers") or []
-    raw_rows = extracted.get("rows") or []
-    print(f"[info] 表头: {headers}")
-    print(f"[info] 原始行数: {extracted.get('rowCount', 0)}")
 
-    if not raw_rows:
-        print("[warn] 未解析到任何数据行（验证码未过 或 接口 401）")
-        return []
-
-    results = [{"headers": headers, "cells": cells} for cells in raw_rows]
-    return parse_rows(results)
+s(results)
 
 
 def qualify(item, filters):
