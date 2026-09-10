@@ -325,7 +325,22 @@ def scrape_exchange(config):
             viewport={"width": 1600, "height": 1400},
             locale="zh-CN",
             timezone_id="Asia/Shanghai",
-            args=["--disable-blink-features=AutomationControlled"],
+            args=[
+                "--no-sandbox",
+                "--disable-dev-shm-usage",      # Docker/小内存 VPS 必加
+                "--disable-gpu",
+                "--disable-software-rasterizer",
+                "--disable-extensions",
+                "--disable-background-networking",
+                "--disable-default-apps",
+                "--disable-sync",
+                "--disable-translate",
+                "--mute-audio",
+                "--no-first-run",
+                "--no-zygote",
+                "--renderer-process-limit=1",
+                "--js-flags=--max-old-space-size=256",
+            ],
             user_agent=(
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                 "AppleWebKit/537.36 (KHTML, like Gecko) "
