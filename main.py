@@ -601,8 +601,6 @@ def scrape_exchange(config):
     return []
 
 
-s(results)
-
 
 def qualify(item, filters):
     ratio_max = float(filters.get("ratio_max", 0.70))
