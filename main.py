@@ -785,7 +785,9 @@ def parse_buy_time_and_indices(text, msg_date_ts=None):
 
 
 def process_buy_replies(token, chat_id, state, hold_days):
-    """处理「已买N」：买入时间优先正文，其次 TG 发送时间。"""
+    """处理「已买N」：买入时间优先正文，其次 TG 发送时间。
+    同一条消息若被编辑，只按最终内容处理一次，避免重复确认。
+    """
     offset = state.get("tg_update_offset")
     try:
         updates = telegram_get_updates(token, offset=offset)
@@ -799,20 +801,31 @@ def process_buy_replies(token, chat_id, state, hold_days):
     marked = 0
     max_update_id = None
 
+    # 同一 message_id 多次编辑：只保留最新 update
+    latest_by_msg = {}
     for upd in updates:
         uid = upd.get("update_id")
         if uid is not None:
             max_update_id = uid if max_update_id is None else max(max_update_id, uid)
 
-        msg = upd.get("message") or upd.get("edited_message")
+        msg = upd.get("edited_message") or upd.get("message")
         if not msg:
             continue
         chat = msg.get("chat") or {}
         if str(chat.get("id")) != str(chat_id):
             continue
-        text = msg.get("text") or ""
+        mid = msg.get("message_id")
+        if mid is None:
+            continue
+        prev = latest_by_msg.get(mid)
+        if prev is None or (uid is not None and uid >= prev[0]):
+            latest_by_msg[mid] = (uid if uid is not None else -1, msg)
+
+    for mid, (_uid, msg) in latest_by_msg.items():
+        text_body = msg.get("text") or ""
+        ts = msg.get("edit_date") or msg.get("date")
         bought_at, indices, time_source = parse_buy_time_and_indices(
-            text, msg_date_ts=msg.get("date")
+            text_body, msg_date_ts=ts
         )
         if not indices:
             continue
@@ -828,9 +841,7 @@ def process_buy_replies(token, chat_id, state, hold_days):
                 telegram_send(
                     token,
                     chat_id,
-                    "⚠️ 暂无榜单可标记。等推送 Top 后回复：\n"
-                    "<code>已买1</code>\n"
-                    "或带时间：<code>2026-09-10 15:30 已买1</code>",
+                    "⚠️ 暂无榜单可标记。等推送 Top 后回复：" + chr(10) + "<code>已买1</code>" + chr(10) + "或带时间：<code>2026-09-10 15:30 已买1</code>",
                 )
             except Exception:
                 pass
@@ -858,6 +869,7 @@ def process_buy_replies(token, chat_id, state, hold_days):
                     "unlock_at": unlock.isoformat(),
                     "buy_time_source": time_source,
                     "buy_index": idx,
+                    "buy_from_msg_id": mid,
                 }
             )
             candidates[key] = rec
@@ -869,32 +881,42 @@ def process_buy_replies(token, chat_id, state, hold_days):
                 f"unlock={unlock.isoformat()}"
             )
 
-        if names:
-            try:
-                # 展示用北京时间
-                try:
-                    from zoneinfo import ZoneInfo
-                    local = bought_at.astimezone(ZoneInfo("Asia/Shanghai"))
-                except Exception:
-                    local = bought_at + timedelta(hours=8)
-                local_s = local.strftime("%Y-%m-%d %H:%M")
-                unlock_s = (unlock.astimezone(local.tzinfo) if hasattr(local, "tzinfo") else unlock + timedelta(hours=8))
-                try:
-                    unlock_s = unlock.astimezone(ZoneInfo("Asia/Shanghai")).strftime("%Y-%m-%d %H:%M")
-                except Exception:
-                    unlock_s = (bought_at + timedelta(days=hold_days) + timedelta(hours=8)).strftime("%Y-%m-%d %H:%M")
-                src = {"text": "消息内时间", "tg_message": "TG发送时间", "now": "脚本处理时间"}.get(
-                    time_source, time_source
-                )
-                telegram_send(
-                    token,
-                    chat_id,
-                    f"✅ 已记录购买（{src} <b>{local_s}</b>）\n"
-                    f"约 <b>{hold_days:g}</b> 天后提醒（{unlock_s}）：\n"
-                    + "\n".join(names),
-                )
-            except Exception as e:
-                print(f"[warn] 确认消息失败: {e}")
+        if not names:
+            continue
+
+        try:
+            from zoneinfo import ZoneInfo
+
+            local = bought_at.astimezone(ZoneInfo("Asia/Shanghai"))
+            unlock_s = unlock.astimezone(ZoneInfo("Asia/Shanghai")).strftime(
+                "%Y-%m-%d %H:%M"
+            )
+        except Exception:
+            local = bought_at + timedelta(hours=8)
+            unlock_s = (
+                bought_at + timedelta(days=hold_days) + timedelta(hours=8)
+            ).strftime("%Y-%m-%d %H:%M")
+        local_s = local.strftime("%Y-%m-%d %H:%M")
+        src = {
+            "text": "消息内时间",
+            "tg_message": "TG发送时间",
+            "now": "脚本处理时间",
+        }.get(time_source, time_source)
+        body = chr(10).join(names)
+        try:
+            telegram_send(
+                token,
+                chat_id,
+                (
+                    f"✅ 已记录购买（{src} <b>{local_s}</b>）"
+                    + chr(10)
+                    + f"约 <b>{hold_days:g}</b> 天后提醒（{unlock_s}）："
+                    + chr(10)
+                    + body
+                ),
+            )
+        except Exception as e:
+            print(f"[warn] 确认消息失败: {e}")
 
     if max_update_id is not None:
         state["tg_update_offset"] = max_update_id + 1
