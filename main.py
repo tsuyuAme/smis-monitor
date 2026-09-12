@@ -346,6 +346,7 @@ def scrape_exchange(config):
 
     max_attempts = 2
     last_err = None
+    warnings = []
 
     for attempt in range(1, max_attempts + 1):
         api_payloads = []
@@ -527,11 +528,15 @@ def scrape_exchange(config):
                 # ---------- 等待「应用后」接口 ----------
                 print("[info] 等待筛选后的接口数据...")
                 got = []
+                page_crashed = False
                 for i in range(25):
                     try:
                         page.wait_for_timeout(800)
                     except Exception as e:
-                        print(f"[warn] 等待中页面异常: {e}")
+                        page_crashed = True
+                        msg = f"等待中页面异常: {e}"
+                        print(f"[warn] {msg}")
+                        warnings.append(msg)
                         break
                     if post_apply_payloads:
                         for pl in post_apply_payloads:
@@ -542,27 +547,28 @@ def scrape_exchange(config):
                         if got:
                             print(f"[info] 应用后接口解析到 {len(got)} 条 (第 {i+1} 次等待)")
                             break
-                    # 若应用后没有新包但应用前有，有时站点不重新请求——再点一次应用
                     if i in (8, 16) and not post_apply_payloads:
                         try:
                             page.locator("button:has-text('应用设置')").first.click(timeout=1500)
                             print("[info] 再次点击应用设置")
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            warnings.append(f"再次点击应用失败: {e}")
 
-                # 兜底：只有应用前数据时也用（并打日志）
+                used_fallback = False
                 if not got:
                     for pl in reversed(api_payloads):
                         part = items_from_api_payload(pl)
                         if part:
                             got = part
-                            print(
-                                f"[warn] 未捕获到应用后接口，暂用已有数据 {len(got)} 条"
+                            used_fallback = True
+                            msg = (
+                                f"未捕获到应用后接口，暂用已有数据 {len(got)} 条"
                                 "（可能未重新请求）"
                             )
+                            print(f"[warn] {msg}")
+                            warnings.append(msg)
                             break
 
-                # 尽快关浏览器释放内存
                 try:
                     context.close()
                 except Exception:
@@ -573,15 +579,28 @@ def scrape_exchange(config):
                 except Exception:
                     pass
 
-                if got:
-                    return got
+                # 页面崩溃且没有应用后数据：优先重试，而不是直接用脏数据返回
+                if (page_crashed or used_fallback) and not post_apply_payloads:
+                    if attempt < max_attempts:
+                        raise RuntimeError(
+                            "页面崩溃或未拿到筛选后接口，准备重试"
+                            + (f"（已有兜底 {len(got)} 条）" if got else "")
+                        )
+                    # 最后一轮才接受兜底
+                    if got:
+                        warnings.append(f"第 {attempt} 次仍异常，使用兜底数据 {len(got)} 条")
+                        return got, warnings
 
-                # DOM 兜底（尽量不用）
+                if got:
+                    return got, warnings
+
                 print("[warn] 接口无有效列表，尝试结束本轮")
                 last_err = RuntimeError("无有效商品数据")
         except Exception as e:
             last_err = e
-            print(f"[error] 第 {attempt} 次尝试失败: {e}")
+            msg = f"第 {attempt} 次尝试失败: {e}"
+            print(f"[error] {msg}")
+            warnings.append(msg)
             try:
                 if context:
                     context.close()
@@ -593,12 +612,14 @@ def scrape_exchange(config):
             except Exception:
                 pass
             if attempt < max_attempts:
-                print("[info] 1.5s 后重试...")
-                time.sleep(1.5)
+                print("[info] 2s 后重试...")
+                time.sleep(2)
 
     if last_err:
-        raise last_err
-    return []
+        # 若有过兜底机会已在上面 return；这里彻底失败
+        warnings.append(str(last_err))
+        return [], warnings
+    return [], warnings
 
 
 
@@ -948,7 +969,7 @@ def discovery_batch_message(items, sale_method, hold_days):
             f"   平台价 {pp} → 到手 {sb} · 量 {vol_s}"
         )
     lines.append("━━━━━━━━━━━━━━━━")
-    lines.append("买了请回复 Bot：")
+    lines.append("买了请回复 Bot（不要只在群里顺口说）：")
     lines.append("<code>已买1</code> 或 <code>已买1,3</code>（数字=上方序号）")
     lines.append("可写时间：<code>09-10 15:30 已买1</code> 或 <code>15:30 已买1</code>")
     lines.append("未写时间则用你在 TG 点发送的时间起算保护期。")
@@ -1000,7 +1021,16 @@ def run():
         print(f"[warn] 处理已买回复异常: {e}")
 
     print("[info] 开始抓取...")
-    rows = scrape_exchange(config)
+    scrape_warnings = []
+    try:
+        scraped = scrape_exchange(config)
+        if isinstance(scraped, tuple):
+            rows, scrape_warnings = scraped
+        else:
+            rows = scraped
+    except Exception as e:
+        scrape_warnings.append(str(e))
+        raise
     print(f"[info] 解析到 {len(rows)} 条有效商品")
 
     for i, r in enumerate(rows[:8]):
@@ -1069,11 +1099,11 @@ def run():
     batch = qualified[:10]
     if batch:
         try:
-            msg_id = telegram_send(
-                token,
-                chat_id,
-                discovery_batch_message(batch, sale_method, hold_days),
-            )
+            body = discovery_batch_message(batch, sale_method, hold_days)
+            if scrape_warnings:
+                body += chr(10) + "━━━━━━━━━━━━━━━━" + chr(10) + "<b>本轮警告：</b>" + chr(10)
+                body += chr(10).join("• " + str(w)[:100] for w in scrape_warnings[:5])
+            msg_id = telegram_send(token, chat_id, body)
             batch_entries = []
             for it in batch:
                 batch_entries.append(
@@ -1101,7 +1131,21 @@ def run():
         except Exception as e:
             print(f"[error] Telegram 发送失败: {e}")
     else:
-        print("[info] 无符合条件商品，不推送")
+        print("[info] 无符合条件商品，推送本轮说明")
+        try:
+            lines = [
+                "⚪ <b>本轮无符合条件饰品</b>",
+                f"抓取 {len(rows)} 条 · 合格 0 条",
+                f"过滤: ratio≤{filters.get('ratio_max')} · 跌幅≥{filters.get('drop_min_pct')}% · vol≥{filters.get('volume_min')}",
+            ]
+            if scrape_warnings:
+                lines.append("━━━━━━━━━━━━━━━━")
+                lines.append("<b>执行异常/警告：</b>")
+                for w in scrape_warnings[:8]:
+                    lines.append("• " + str(w)[:120])
+            telegram_send(token, chat_id, chr(10).join(lines))
+        except Exception as e:
+            print(f"[error] 空结果说明发送失败: {e}")
 
     # 仅对「已买」且到期的条目提醒
     for key, record in list(candidates.items()):
