@@ -623,28 +623,53 @@ def scrape_exchange(config):
 
 
 
+def change_7d_bounds(filters):
+    """7日涨跌允许区间 [min_pct, max_pct]。
+
+    新配置：
+      change_7d_min_pct: 下限，如 -5 表示跌幅不能超过 5%（change >= -5）
+      change_7d_max_pct: 上限，如 5 表示涨幅不能超过 5%（change <= +5）
+
+    旧配置兼容：
+      drop_min_pct: 至少下跌该百分比 → change <= -drop_min_pct
+      （等价于 max=-drop_min_pct，min 极小）
+    """
+    if "change_7d_min_pct" in filters or "change_7d_max_pct" in filters:
+        lo = float(filters.get("change_7d_min_pct", -100))
+        hi = float(filters.get("change_7d_max_pct", 100))
+        if lo > hi:
+            lo, hi = hi, lo
+        return lo, hi
+    if filters.get("drop_min_pct") is not None:
+        d = float(filters.get("drop_min_pct", 0))
+        return -1000.0, -d
+    return -100.0, 100.0
+
+
 def qualify(item, filters):
     ratio_max = float(filters.get("ratio_max", 0.70))
-    drop_min = float(filters.get("drop_min_pct", 3))
     volume_min = float(filters.get("volume_min", 50))
     price_min = filters.get("price_min")
     price_max = filters.get("price_max")
     platforms = [str(x).lower() for x in filters.get("platforms", []) if str(x).strip()]
+    ch_lo, ch_hi = change_7d_bounds(filters)
 
     if item["ratio"] is None or item["ratio"] > ratio_max:
         return False
-    if item["change_7d"] is None or item["change_7d"] > -drop_min:
+    ch = item.get("change_7d")
+    if ch is None or ch < ch_lo or ch > ch_hi:
         return False
     if item["volume"] is not None and item["volume"] < volume_min:
         return False
-    if platforms and item["platform"].lower() not in platforms:
+    if platforms and str(item.get("platform") or "").lower() not in platforms:
         return False
-    p = item["platform_price"]
+    p = item.get("platform_price")
     if price_min is not None and (p is None or p < float(price_min)):
         return False
     if price_max is not None and (p is None or p > float(price_max)):
         return False
     return True
+
 
 
 def key_for(item):
@@ -1041,9 +1066,10 @@ def run():
         )
 
     by_key = {key_for(x): x for x in rows}
+    ch_lo, ch_hi = change_7d_bounds(filters)
     print(
         f"[info] 过滤条件: ratio<={filters.get('ratio_max')} "
-        f"跌幅>={filters.get('drop_min_pct')}% "
+        f"7d∈[{ch_lo},{ch_hi}]% "
         f"vol>={filters.get('volume_min')} "
         f"价 {filters.get('price_min')}~{filters.get('price_max')}"
     )
@@ -1055,12 +1081,12 @@ def run():
         elif skip_shown < 5:
             reasons = []
             rm = float(filters.get("ratio_max", 0.70))
-            dm = float(filters.get("drop_min_pct", 3))
             vm = float(filters.get("volume_min", 50))
+            lo, hi = change_7d_bounds(filters)
             if x["ratio"] is None or x["ratio"] > rm:
                 reasons.append(f"ratio={x['ratio']}>{rm}")
-            if x["change_7d"] is None or x["change_7d"] > -dm:
-                reasons.append(f"7d={x['change_7d']}未跌够{dm}%")
+            if x["change_7d"] is None or x["change_7d"] < lo or x["change_7d"] > hi:
+                reasons.append(f"7d={x['change_7d']}不在[{lo},{hi}]")
             if x["volume"] is not None and x["volume"] < vm:
                 reasons.append(f"vol={x['volume']}<{vm}")
             print(f"  [skip] {str(x['name'])[:18]}: {', '.join(reasons) or '其他'}")
@@ -1136,7 +1162,7 @@ def run():
             lines = [
                 "⚪ <b>本轮无符合条件饰品</b>",
                 f"抓取 {len(rows)} 条 · 合格 0 条",
-                f"过滤: ratio≤{filters.get('ratio_max')} · 跌幅≥{filters.get('drop_min_pct')}% · vol≥{filters.get('volume_min')}",
+                f"过滤: ratio≤{filters.get('ratio_max')} · 7d∈[{ch_lo},{ch_hi}]% · vol≥{filters.get('volume_min')}",
             ]
             if scrape_warnings:
                 lines.append("━━━━━━━━━━━━━━━━")
