@@ -681,7 +681,15 @@ def fmt_money(v):
 
 
 def fmt_pct(v):
-    return "—" if v is None else f"{v:+.2f}%"
+    """涨跌展示。TG 无法改字体颜色，用红涨绿跌 emoji（国内行情习惯）。"""
+    if v is None:
+        return "—"
+    # 中国行情习惯：红涨绿跌
+    if v > 0:
+        return f"🔴+{v:.2f}%"
+    if v < 0:
+        return f"🟢{v:.2f}%"  # v 自带负号
+    return f"⚪{v:.2f}%"
 
 
 
