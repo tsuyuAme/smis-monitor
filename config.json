@@ -8,7 +8,7 @@
     "sale_method": "Steam挂底价"
   },
   "filters": {
-    "ratio_max": 0.63,
+    "ratio_max": 0.62,
     "change_7d_min_pct": -5,
     "change_7d_max_pct": 5,
     "volume_min": 40,
