@@ -9,9 +9,9 @@
   },
   "filters": {
     "ratio_max": 0.62,
-    "change_7d_min_pct": -5,
+    "change_7d_min_pct": -10,
     "change_7d_max_pct": 5,
-    "volume_min": 40,
+    "volume_min": 80,
     "price_min": 2,
     "price_max": 5000,
     "platforms": []
