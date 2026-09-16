@@ -300,6 +300,41 @@ def parse_rows(raw_rows):
     return out
 
 
+def _parse_history_payload(payload):
+    data = payload.get("data") if isinstance(payload, dict) else None
+    if not isinstance(data, list) or len(data) < 2:
+        return None
+    times, prices = data[0], data[1]
+    if not isinstance(times, list) or not isinstance(prices, list):
+        return None
+    return times, prices
+
+
+
+def change_7d_bounds(filters):
+    """7日涨跌允许区间 [min_pct, max_pct]。
+
+    新配置：
+      change_7d_min_pct: 下限，如 -5 表示跌幅不能超过 5%（change >= -5）
+      change_7d_max_pct: 上限，如 5 表示涨幅不能超过 5%（change <= +5）
+
+    旧配置兼容：
+      drop_min_pct: 至少下跌该百分比 → change <= -drop_min_pct
+      （等价于 max=-drop_min_pct，min 极小）
+    """
+    if "change_7d_min_pct" in filters or "change_7d_max_pct" in filters:
+        lo = float(filters.get("change_7d_min_pct", -100))
+        hi = float(filters.get("change_7d_max_pct", 100))
+        if lo > hi:
+            lo, hi = hi, lo
+        return lo, hi
+    if filters.get("drop_min_pct") is not None:
+        d = float(filters.get("drop_min_pct", 0))
+        return -1000.0, -d
+    return -100.0, 100.0
+
+
+
 def scrape_exchange(config):
     """低配 VPS 优化：仍完整走「填筛选 → 应用设置 → 用应用后的接口数据」。"""
     url = config.get("site", {}).get("url", "https://smis.club/exchange")
@@ -308,7 +343,8 @@ def scrape_exchange(config):
 
     price_min = filters.get("price_min", 1)
     price_max = filters.get("price_max", 5000)
-    page_volume = max(10, min(int(filters.get("volume_min", 50)), 50))
+    # 页面「日成交量」与本地过滤使用同一 volume_min（不再强行封顶 50）
+    page_volume = max(1, int(filters.get("volume_min", 50)))
 
     setup_mode = os.getenv("SMIS_SETUP", "").strip() in {"1", "true", "True", "yes", "YES"}
     headed_env = os.getenv("SMIS_HEADED", "").strip() in {"1", "true", "True", "yes", "YES"}
@@ -379,6 +415,29 @@ def scrape_exchange(config):
                     )
                     page = context.new_page()
 
+                captured_api_headers = {}
+
+                def on_request(req):
+                    try:
+                        u = req.url or ""
+                        if "smis.club" not in u or "/api/" not in u:
+                            return
+                        h = req.headers or {}
+                        # Playwright 头名通常小写
+                        for src, dst in (
+                            ("auth", "Auth"),
+                            ("auth2", "Auth2"),
+                            ("authorization", "Authorization"),
+                        ):
+                            val = h.get(src) or h.get(dst)
+                            if val:
+                                captured_api_headers[dst] = val
+                        if "Auth" in captured_api_headers and "Auth2" in captured_api_headers:
+                            # 已齐，不必每次打印
+                            pass
+                    except Exception:
+                        pass
+
                 def on_response(resp):
                     try:
                         u = resp.url or ""
@@ -399,6 +458,7 @@ def scrape_exchange(config):
                     except Exception:
                         pass
 
+                page.on("request", on_request)
                 page.on("response", on_response)
 
                 print(
@@ -420,7 +480,7 @@ def scrape_exchange(config):
                             print(f"[info] 已有接口数据，提前继续 ({_w+1}s)")
                             break
 
-                # ---------- 填筛选 ----------
+                # ---------- 填筛选（仅基础：价格 + 日成交量，避免点高级设置吃内存）----------
                 print(f"[info] 设置筛选: 价格 {price_min}~{price_max}, 成交量>={page_volume}")
 
                 def fill_near_label(label_text, values):
@@ -494,7 +554,7 @@ def scrape_exchange(config):
                               }
                               return [];
                             };
-                            return { price: pick('价格'), volume: pick('日成交') };
+                            return { price: pick('价格区间'), volume: pick('日成交') };
                             }"""
                         )
                         print(f"[info] 读回输入框: {shown}")
@@ -569,6 +629,41 @@ def scrape_exchange(config):
                             warnings.append(msg)
                             break
 
+                # 低点检测放到关浏览器之后，用截获的 Auth/Cookie 单独请求
+                if captured_api_headers:
+                    print(
+                        "[info] 已截获 API 鉴权头: "
+                        + ", ".join(sorted(captured_api_headers.keys()))
+                    )
+                else:
+                    print("[warn] 未截获 Auth/Auth2（关浏览器后历史接口可能 401）")
+
+                # 关闭前导出 cookie / 本地存储，供历史折线接口鉴权
+                session_auth = {
+                    "cookies": [],
+                    "local_storage": {},
+                    "headers": dict(captured_api_headers),
+                }
+                try:
+                    session_auth["cookies"] = context.cookies()
+                except Exception as e:
+                    print(f"[warn] 导出 cookie 失败: {e}")
+                try:
+                    session_auth["local_storage"] = page.evaluate(
+                        """() => {
+                            const o = {};
+                            try {
+                              for (let i = 0; i < localStorage.length; i++) {
+                                const k = localStorage.key(i);
+                                o[k] = localStorage.getItem(k);
+                              }
+                            } catch (e) {}
+                            return o;
+                        }"""
+                    ) or {}
+                except Exception as e:
+                    print(f"[warn] 导出 localStorage 失败: {e}")
+
                 try:
                     context.close()
                 except Exception:
@@ -589,10 +684,10 @@ def scrape_exchange(config):
                     # 最后一轮才接受兜底
                     if got:
                         warnings.append(f"第 {attempt} 次仍异常，使用兜底数据 {len(got)} 条")
-                        return got, warnings
+                        return got, warnings, session_auth
 
                 if got:
-                    return got, warnings
+                    return got, warnings, session_auth
 
                 print("[warn] 接口无有效列表，尝试结束本轮")
                 last_err = RuntimeError("无有效商品数据")
@@ -616,37 +711,35 @@ def scrape_exchange(config):
                 time.sleep(2)
 
     if last_err:
-        # 若有过兜底机会已在上面 return；这里彻底失败
         warnings.append(str(last_err))
-        return [], warnings
-    return [], warnings
+        return [], warnings, {}
+    return [], warnings, {}
 
 
 
-def change_7d_bounds(filters):
-    """7日涨跌允许区间 [min_pct, max_pct]。
 
-    新配置：
-      change_7d_min_pct: 下限，如 -5 表示跌幅不能超过 5%（change >= -5）
-      change_7d_max_pct: 上限，如 5 表示涨幅不能超过 5%（change <= +5）
-
-    旧配置兼容：
-      drop_min_pct: 至少下跌该百分比 → change <= -drop_min_pct
-      （等价于 max=-drop_min_pct，min 极小）
-    """
-    if "change_7d_min_pct" in filters or "change_7d_max_pct" in filters:
-        lo = float(filters.get("change_7d_min_pct", -100))
-        hi = float(filters.get("change_7d_max_pct", 100))
-        if lo > hi:
-            lo, hi = hi, lo
-        return lo, hi
-    if filters.get("drop_min_pct") is not None:
-        d = float(filters.get("drop_min_pct", 0))
-        return -1000.0, -d
-    return -100.0, 100.0
+def parse_smis_update_time(value):
+    """解析 smis updateTime（按北京时间）。"""
+    if value is None:
+        return None
+    s = str(value).strip()
+    if not s or s in {"-", "--", "None"}:
+        return None
+    try:
+        from zoneinfo import ZoneInfo
+        tz = ZoneInfo("Asia/Shanghai")
+    except Exception:
+        tz = timezone(timedelta(hours=8))
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y/%m/%d %H:%M:%S", "%Y/%m/%d %H:%M"):
+        try:
+            return datetime.strptime(s, fmt).replace(tzinfo=tz).astimezone(UTC)
+        except Exception:
+            continue
+    return None
 
 
 def qualify(item, filters):
+    """第一阶段：比例 / 涨跌 / 成交量 / 价格 / 更新时间。"""
     ratio_max = float(filters.get("ratio_max", 0.70))
     volume_min = float(filters.get("volume_min", 50))
     price_min = filters.get("price_min")
@@ -668,8 +761,280 @@ def qualify(item, filters):
         return False
     if price_max is not None and (p is None or p > float(price_max)):
         return False
+
+    within = filters.get("update_within_minutes")
+    if within is not None and str(within).strip() != "":
+        within = float(within)
+        ut = parse_smis_update_time(item.get("updated"))
+        if ut is None:
+            return False
+        age_min = (now_utc() - ut).total_seconds() / 60.0
+        if age_min < -5:
+            age_min = 0
+        if age_min > within:
+            return False
+        item["update_age_min"] = round(age_min, 1)
     return True
 
+
+def build_smis_session(session_auth=None):
+    """用挂刀页浏览器会话里的 cookie / token 构造 requests.Session。"""
+    session_auth = session_auth or {}
+    sess = requests.Session()
+    ua = (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/122.0.0.0 Safari/537.36"
+    )
+    sess.headers.update(
+        {
+            "User-Agent": ua,
+            "Origin": "https://smis.club",
+            "Accept": "application/json, text/plain, */*",
+            "Content-Type": "application/json",
+        }
+    )
+    for c in session_auth.get("cookies") or []:
+        try:
+            sess.cookies.set(
+                c.get("name"),
+                c.get("value"),
+                domain=c.get("domain") or "smis.club",
+                path=c.get("path") or "/",
+            )
+        except Exception:
+            pass
+    # 优先使用 Playwright 截获的 Auth / Auth2
+    for k, v in (session_auth.get("headers") or {}).items():
+        if v:
+            sess.headers[k] = v
+    local = session_auth.get("local_storage") or {}
+    token = None
+    for k, v in local.items():
+        if not v:
+            continue
+        lk = str(k).lower()
+        if any(x in lk for x in ("token", "auth", "authorization", "access")):
+            token = str(v).strip().strip('"')
+            break
+    if token and "Authorization" not in sess.headers and "Auth" not in sess.headers:
+        if token.lower().startswith("bearer "):
+            sess.headers["Authorization"] = token
+        else:
+            sess.headers["Authorization"] = f"Bearer {token}"
+        sess.headers.setdefault("token", token)
+        sess.headers.setdefault("x-token", token)
+    return sess
+
+
+
+def fetch_history_line_via_playwright(commodity_id, days, keys, session_auth):
+    """用 Playwright 请求上下文携带 cookie 拉折线（应对 401）。"""
+    cookies = list(session_auth.get("cookies") or [])
+    if not cookies:
+        return None
+    # Playwright add_cookies 需要 url 或 domain
+    pw_cookies = []
+    for c in cookies:
+        item = {
+            "name": c.get("name"),
+            "value": c.get("value"),
+            "domain": c.get("domain") or ".smis.club",
+            "path": c.get("path") or "/",
+        }
+        if c.get("expires") is not None:
+            try:
+                item["expires"] = float(c["expires"])
+            except Exception:
+                pass
+        pw_cookies.append(item)
+    chrome_args = [
+        "--disable-dev-shm-usage",
+        "--no-sandbox",
+        "--disable-gpu",
+        "--disable-extensions",
+    ]
+    try:
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=True, args=chrome_args)
+            context = browser.new_context(
+                user_agent=(
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/122.0.0.0 Safari/537.36"
+                )
+            )
+            try:
+                context.add_cookies(pw_cookies)
+            except Exception as e:
+                print(f"[warn] add_cookies 失败: {e}")
+            api = context.request
+            import json as _json
+            r = api.post(
+                "https://smis.club/api/commodity/history/line",
+                data=_json.dumps(
+                    {
+                        "commodityId": int(commodity_id),
+                        "days": int(days),
+                        "keys": keys,
+                    }
+                ),
+                headers={
+                    "Referer": f"https://smis.club/commodity/{commodity_id}",
+                    "Origin": "https://smis.club",
+                    "Content-Type": "application/json",
+                },
+                timeout=20000,
+            )
+            status = r.status
+            body = r.text()
+            context.close()
+            browser.close()
+            if status == 401:
+                print(f"[warn] Playwright 历史折线仍 401 id={commodity_id}")
+                return None
+            if status >= 400:
+                print(f"[warn] Playwright 历史折线 HTTP {status} id={commodity_id}")
+                return None
+            import json as _json
+            try:
+                payload = r.json()
+            except Exception:
+                payload = _json.loads(body)
+            return _parse_history_payload(payload)
+    except Exception as e:
+        print(f"[warn] Playwright 拉折线失败 id={commodity_id}: {e}")
+        return None
+
+
+def fetch_history_line(commodity_id, days=7, keys=None, session_auth=None, session=None):
+    """关浏览器后用截获的 Auth/Cookie 拉折线。成功返回 (times_ms, prices)。"""
+    if keys is None:
+        keys = ["allSellPrice"]
+    session_auth = session_auth or {}
+    try:
+        sess = session or build_smis_session(session_auth)
+        r = sess.post(
+            "https://smis.club/api/commodity/history/line",
+            json={
+                "commodityId": int(commodity_id),
+                "days": int(days),
+                "keys": keys,
+            },
+            headers={
+                "Referer": f"https://smis.club/commodity/{commodity_id}",
+            },
+            timeout=15,
+        )
+        if r.status_code == 401:
+            print(f"[warn] 历史折线 401 id={commodity_id}")
+            return None
+        r.raise_for_status()
+        return _parse_history_payload(r.json())
+    except Exception as e:
+        print(f"[warn] 历史折线获取失败 id={commodity_id}: {e}")
+        return None
+
+
+def is_near_platform_low(item, days, tolerance_pct, session_auth=None, session=None):
+    """当前平台价是否接近近 N 日 allSellPrice 最低点。True/False；无法判断 None。"""
+    cid = item.get("commodity_id")
+    price = item.get("platform_price")
+    if cid is None or price is None:
+        return None
+    try:
+        price = float(price)
+    except Exception:
+        return None
+    hist = fetch_history_line(
+        cid, days=days, keys=["allSellPrice"], session_auth=session_auth, session=session
+    )
+    if not hist:
+        return None
+    _times, prices = hist
+    series = []
+    for v in prices:
+        try:
+            if v is None:
+                continue
+            fv = float(v)
+            if fv > 0:
+                series.append(fv)
+        except Exception:
+            continue
+    if not series:
+        return None
+    mn = min(series)
+    mx = max(series)
+    tol = float(tolerance_pct) / 100.0
+    ok = price <= mn * (1.0 + tol)
+    item["hist_min"] = round(mn, 4)
+    item["hist_max"] = round(mx, 4)
+    item["hist_days"] = int(days)
+    item["near_low"] = ok
+    item["near_low_pct_from_min"] = round((price / mn - 1.0) * 100.0, 2) if mn else None
+    return ok
+
+
+def filter_near_platform_low(items, filters, warnings=None, session_auth=None):
+    """第二阶段（关浏览器后）：用截获的 Auth/Cookie 请求 history/line。"""
+    if warnings is None:
+        warnings = []
+    days = filters.get("near_low_days")
+    if days is None or str(days).strip() == "" or float(days) <= 0:
+        return items
+    session_auth = session_auth or {}
+    hdrs = session_auth.get("headers") or {}
+    if not hdrs.get("Auth") and not hdrs.get("auth"):
+        msg = "无 Auth 头，无法请求历史价格，跳过低点筛选"
+        print(f"[warn] {msg}")
+        warnings.append(msg)
+        return items
+    session = build_smis_session(session_auth)
+    days = int(float(days))
+    tol = float(filters.get("near_low_tolerance_pct", 2))
+    max_check = int(filters.get("near_low_max_check", 30))
+    print(
+        f"[info] 关浏览器后低点检测: {len(items)} 条入围，最多查 {max_check}，"
+        f"近 {days} 日，容差 {tol}%"
+    )
+    out = []
+    checked = 0
+    fail_401 = 0
+    for it in items:
+        if checked >= max_check:
+            warnings.append(f"低点检测达到上限 {max_check}，其余跳过")
+            break
+        if fail_401 >= 2:
+            msg = "history/line 连续 401，停止低点检测"
+            print(f"[warn] {msg}")
+            warnings.append(msg)
+            break
+        checked += 1
+        name = str(it.get("name") or "")[:20]
+        result = is_near_platform_low(
+            it, days=days, tolerance_pct=tol, session_auth=session_auth, session=session
+        )
+        if result is None:
+            # 可能是 401 或数据空
+            fail_401 += 1
+        else:
+            fail_401 = 0
+        if result is True:
+            out.append(it)
+            print(
+                f"  [low] ✓ {name}  价={it.get('platform_price')}  "
+                f"min{days}d={it.get('hist_min')}  距低点={it.get('near_low_pct_from_min')}%"
+            )
+        elif result is False:
+            print(
+                f"  [low] ✗ {name}  价={it.get('platform_price')}  "
+                f"min{days}d={it.get('hist_min')}  距低点={it.get('near_low_pct_from_min')}%"
+            )
+        else:
+            warnings.append(f"无法判断低点: {it.get('name')}")
+            print(f"  [low] ? {name} 历史数据不足，已排除")
+    return out
 
 
 def key_for(item):
@@ -1001,11 +1366,15 @@ def discovery_batch_message(items, sale_method, hold_days):
             f"   比例 <b>{ratio_s}</b> · 7日 <b>{ch_s}</b> · {plat}\n"
             f"   平台价 {pp} → 到手 {sb} · 量 {vol_s}"
         )
+        if item.get("hist_min") is not None:
+            lines.append(
+                f"   近{item.get('hist_days')}日低 {fmt_money(item.get('hist_min'))}"
+                f"（距低点 {item.get('near_low_pct_from_min')}%）"
+            )
+        if item.get("update_age_min") is not None:
+            lines.append(f"   更新于 {item.get('update_age_min')} 分钟前")
     lines.append("━━━━━━━━━━━━━━━━")
-    lines.append("买了请回复 Bot（不要只在群里顺口说）：")
-    lines.append("<code>已买1</code> 或 <code>已买1,3</code>（数字=上方序号）")
-    lines.append("可写时间：<code>09-10 15:30 已买1</code> 或 <code>15:30 已买1</code>")
-    lines.append("未写时间则用你在 TG 点发送的时间起算保护期。")
+    lines.append("回复 <code>已买1</code> / <code>已买1,3</code> 标记购买")
     lines.append('<a href="https://smis.club/exchange">打开挂刀行情</a>')
     return "\n".join(lines)
 
@@ -1057,8 +1426,12 @@ def run():
     scrape_warnings = []
     try:
         scraped = scrape_exchange(config)
+        session_auth = {}
         if isinstance(scraped, tuple):
-            rows, scrape_warnings = scraped
+            if len(scraped) >= 3:
+                rows, scrape_warnings, session_auth = scraped[0], scraped[1], scraped[2]
+            else:
+                rows, scrape_warnings = scraped[0], scraped[1]
         else:
             rows = scraped
     except Exception as e:
@@ -1079,13 +1452,15 @@ def run():
         f"[info] 过滤条件: ratio<={filters.get('ratio_max')} "
         f"7d∈[{ch_lo},{ch_hi}]% "
         f"vol>={filters.get('volume_min')} "
-        f"价 {filters.get('price_min')}~{filters.get('price_max')}"
+        f"价 {filters.get('price_min')}~{filters.get('price_max')} "
+        f"更新≤{filters.get('update_within_minutes')}分钟 "
+        f"低点{filters.get('near_low_days')}日±{filters.get('near_low_tolerance_pct')}%"
     )
-    qualified = []
+    stage1 = []
     skip_shown = 0
     for x in rows:
         if qualify(x, filters):
-            qualified.append(x)
+            stage1.append(x)
         elif skip_shown < 5:
             reasons = []
             rm = float(filters.get("ratio_max", 0.70))
@@ -1097,13 +1472,39 @@ def run():
                 reasons.append(f"7d={x['change_7d']}不在[{lo},{hi}]")
             if x["volume"] is not None and x["volume"] < vm:
                 reasons.append(f"vol={x['volume']}<{vm}")
+            within = filters.get("update_within_minutes")
+            if within is not None and str(within).strip() != "":
+                ut = parse_smis_update_time(x.get("updated"))
+                if ut is None:
+                    reasons.append("无更新时间")
+                else:
+                    age = (now_utc() - ut).total_seconds() / 60.0
+                    if age > float(within):
+                        reasons.append(f"更新{age:.0f}分钟前")
             print(f"  [skip] {str(x['name'])[:18]}: {', '.join(reasons) or '其他'}")
             skip_shown += 1
-    qualified.sort(key=lambda x: (x["ratio"], -(x["volume"] or 0)))
+    stage1.sort(key=lambda x: (x["ratio"], -(x["volume"] or 0)))
+    print(f"[info] 第一阶段（比例/涨跌/量/价/更新时间）: {len(stage1)} 条")
 
-    print(f"[info] 符合过滤条件: {len(qualified)} 条")
+    if filters.get("near_low_days") and float(filters.get("near_low_days") or 0) > 0:
+        print(
+            f"[info] 第二阶段：近 {filters.get('near_low_days')} 日平台价低点"
+            f"（容差 {filters.get('near_low_tolerance_pct', 2)}%）"
+        )
+        qualified = filter_near_platform_low(
+            stage1, filters, warnings=scrape_warnings, session_auth=session_auth
+        )
+    else:
+        qualified = stage1
+
+    print(f"[info] 最终符合条件: {len(qualified)} 条")
     for q in qualified[:10]:
-        print(f"  ✓ {q['name']}  ratio={q['ratio']:.4f}  7d={q['change_7d']}%")
+        extra = ""
+        if q.get("hist_min") is not None:
+            extra = f"  low={q.get('hist_min')}({q.get('near_low_pct_from_min')}%)"
+        age = q.get("update_age_min")
+        age_s = f"  更新{age}分前" if age is not None else ""
+        print(f"  ✓ {q['name']}  ratio={q['ratio']:.4f}  7d={q['change_7d']}%{age_s}{extra}")
 
     changed = False
     new_count = 0
@@ -1165,21 +1566,21 @@ def run():
         except Exception as e:
             print(f"[error] Telegram 发送失败: {e}")
     else:
-        print("[info] 无符合条件商品，推送本轮说明")
-        try:
-            lines = [
-                "⚪ <b>本轮无符合条件饰品</b>",
-                f"抓取 {len(rows)} 条 · 合格 0 条",
-                f"过滤: ratio≤{filters.get('ratio_max')} · 7d∈[{ch_lo},{ch_hi}]% · vol≥{filters.get('volume_min')}",
-            ]
-            if scrape_warnings:
-                lines.append("━━━━━━━━━━━━━━━━")
-                lines.append("<b>执行异常/警告：</b>")
+        if scrape_warnings:
+            print("[info] 无合格结果但有异常，推送说明")
+            try:
+                lines = [
+                    "⚠️ <b>本轮执行异常且无合格饰品</b>",
+                    f"抓取 {len(rows)} 条 · 合格 0 条",
+                ]
+                lines.append("<b>异常/警告：</b>")
                 for w in scrape_warnings[:8]:
                     lines.append("• " + str(w)[:120])
-            telegram_send(token, chat_id, chr(10).join(lines))
-        except Exception as e:
-            print(f"[error] 空结果说明发送失败: {e}")
+                telegram_send(token, chat_id, chr(10).join(lines))
+            except Exception as e:
+                print(f"[error] 异常说明发送失败: {e}")
+        else:
+            print("[info] 无符合条件商品，跳过推送")
 
     # 仅对「已买」且到期的条目提醒
     for key, record in list(candidates.items()):
