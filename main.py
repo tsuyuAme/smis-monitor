@@ -38,6 +38,38 @@ def now_utc():
     return datetime.now(UTC)
 
 
+def compute_unlock_at(bought_at, hold_days=7):
+    """
+    Steam/CS2 市场冷却：约 hold_days 天，并向上取整到下一整点。
+    参考 2026-06 起社区与 Skinport 等说明：7 days, rounded to the next full hour。
+    例：买入 08:26 → +7 天 08:26 → 解锁 09:00。
+    已在整点则不再加一小时。
+    """
+    if bought_at.tzinfo is None:
+        bought_at = bought_at.replace(tzinfo=UTC)
+    t = bought_at + timedelta(days=float(hold_days))
+    if t.minute == 0 and t.second == 0 and t.microsecond == 0:
+        return t
+    t = t.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
+    return t
+
+
+def format_local_dt(dt):
+    if dt is None:
+        return "—"
+    if isinstance(dt, str):
+        try:
+            dt = datetime.fromisoformat(dt)
+        except Exception:
+            return dt
+    try:
+        from zoneinfo import ZoneInfo
+        return dt.astimezone(ZoneInfo("Asia/Shanghai")).strftime("%Y-%m-%d %H:%M")
+    except Exception:
+        return (dt + timedelta(hours=8)).strftime("%Y-%m-%d %H:%M") if dt.tzinfo is None else dt.strftime("%Y-%m-%d %H:%M")
+
+
+
 def parse_number(text):
     if text is None:
         return None
@@ -828,6 +860,106 @@ def build_smis_session(session_auth=None):
 
 
 
+
+def fetch_commodity_quote(commodity_id, platform=None, session_auth=None, session=None):
+    """
+    关浏览器后：用 Auth 头 GET /api/commodity/{id}，补全到期提醒用的行情。
+    返回 dict: ratio / change_7d / platform_price / steam_price / steam_balance / volume
+    """
+    if commodity_id is None or str(commodity_id).strip() == "":
+        return None
+    try:
+        sess = session or build_smis_session(session_auth)
+        r = sess.get(
+            f"https://smis.club/api/commodity/{int(commodity_id)}",
+            headers={"Referer": f"https://smis.club/commodity/{commodity_id}"},
+            timeout=15,
+        )
+        if r.status_code == 401:
+            print(f"[warn] 饰品详情 401 id={commodity_id}")
+            return None
+        r.raise_for_status()
+        payload = r.json()
+        data = payload.get("data") if isinstance(payload, dict) else None
+        if not isinstance(data, dict):
+            return None
+
+        plat = (platform or "").upper()
+        plat_key = {
+            "BUFF": "buffSellPrice",
+            "UUYP": "uuypSellPrice",
+            "C5": "c5SellPrice",
+            "IGXE": "igxeSellPrice",
+            "ECO": "ecoSellPrice",
+        }.get(plat)
+
+        platform_price = None
+        if plat_key and data.get(plat_key) is not None:
+            platform_price = float(data[plat_key])
+        else:
+            # 取各平台在售价最低的一个作为参考
+            cands = []
+            for k in ("buffSellPrice", "uuypSellPrice", "c5SellPrice", "igxeSellPrice", "ecoSellPrice"):
+                v = data.get(k)
+                if v is not None:
+                    try:
+                        fv = float(v)
+                        if fv > 0:
+                            cands.append(fv)
+                    except Exception:
+                        pass
+            if cands:
+                platform_price = min(cands)
+
+        steam_price = data.get("steamSellPrice")
+        if steam_price is not None:
+            steam_price = float(steam_price)
+
+        # Steam 卖出到手约 85%
+        steam_balance = None
+        if steam_price and steam_price > 0:
+            steam_balance = steam_price * 0.85
+
+        ratio = None
+        if platform_price and steam_balance and steam_balance > 0:
+            ratio = platform_price / steam_balance
+
+        # 7 日涨跌：用 sellPrice7（约 7 日前参考价）与当前平台价估算
+        change_7d = None
+        ref7 = data.get("sellPrice7")
+        cur = platform_price or steam_price
+        if ref7 is not None and cur is not None:
+            try:
+                ref7 = float(ref7)
+                if ref7 > 0:
+                    change_7d = (float(cur) / ref7 - 1.0) * 100.0
+            except Exception:
+                pass
+
+        volume = data.get("steamTransactionQuantity")
+        if volume is not None:
+            try:
+                volume = float(volume)
+            except Exception:
+                volume = None
+
+        return {
+            "name": data.get("cnName") or data.get("hashName"),
+            "commodity_id": data.get("id") or commodity_id,
+            "platform": plat or None,
+            "platform_price": platform_price,
+            "steam_price": steam_price,
+            "steam_balance": steam_balance,
+            "ratio": ratio,
+            "change_7d": change_7d,
+            "volume": volume,
+            "smis_url": f"https://smis.club/commodity/{commodity_id}",
+        }
+    except Exception as e:
+        print(f"[warn] 获取饰品行情失败 id={commodity_id}: {e}")
+        return None
+
+
 def fetch_history_line_via_playwright(commodity_id, days, keys, session_auth):
     """用 Playwright 请求上下文携带 cookie 拉折线（应对 401）。"""
     cookies = list(session_auth.get("cookies") or [])
@@ -1266,7 +1398,7 @@ def process_buy_replies(token, chat_id, state, hold_days):
                 pass
             continue
 
-        unlock = bought_at + timedelta(days=hold_days)
+        unlock = compute_unlock_at(bought_at, hold_days)
         names = []
         for idx in indices:
             if idx < 1 or idx > len(batch):
@@ -1312,9 +1444,7 @@ def process_buy_replies(token, chat_id, state, hold_days):
             )
         except Exception:
             local = bought_at + timedelta(hours=8)
-            unlock_s = (
-                bought_at + timedelta(days=hold_days) + timedelta(hours=8)
-            ).strftime("%Y-%m-%d %H:%M")
+            unlock_s = format_local_dt(unlock)
         local_s = local.strftime("%Y-%m-%d %H:%M")
         src = {
             "text": "消息内时间",
@@ -1347,7 +1477,7 @@ def discovery_batch_message(items, sale_method, hold_days):
     """最多 10 条合并成一条 TG 消息。"""
     lines = [
         f"🟢 <b>挂刀机会 Top {len(items)}</b>",
-        f"策略: {sale_method} · 保护期约 {hold_days:g} 天",
+        f"策略: {sale_method} · 保护期约 {hold_days:g} 天（整点取整）",
         "━━━━━━━━━━━━━━━━",
     ]
     for i, item in enumerate(items, 1):
@@ -1376,28 +1506,50 @@ def discovery_batch_message(items, sale_method, hold_days):
     lines.append("━━━━━━━━━━━━━━━━")
     lines.append("回复 <code>已买1</code> / <code>已买1,3</code> 标记购买")
     lines.append('<a href="https://smis.club/exchange">打开挂刀行情</a>')
-    return "\n".join(lines)
+    return chr(10).join(lines)
 
 
 def mature_message(item, record, sale_method):
-    ratio = item.get("ratio")
-    ratio_text = f"{ratio:.4f}" if ratio is not None else "—"
+    """到期提醒：无实时行情时不堆「—」，避免误导。"""
     url = smis_item_url(item if item.get("name") else record)
-    name = item.get("name", record.get("name"))
-    bought = record.get("bought_at") or "—"
-    return (
-        "⏰ <b>购买保护期到期 · 可考虑上架</b>\n\n"
-        f"<b><a href=\"{url}\">{name}</a></b>\n"
-        f"平台：{item.get('platform', record.get('platform', '—'))}\n"
-        f"标记购买：{bought}\n"
-        f"当前挂刀比例：<b>{ratio_text}</b>\n"
-        f"当前7日涨跌：<b>{fmt_pct(item.get('change_7d'))}</b>\n"
-        f"平台价：{fmt_money(item.get('platform_price'))}\n"
-        f"Steam售价：{fmt_money(item.get('steam_price'))}\n"
-        f"到手余额：{fmt_money(item.get('steam_balance'))}\n\n"
-        f"建议：按 <b>{sale_method}</b> 核对后出售。\n"
-        f'<a href="https://smis.club/exchange">挂刀行情</a>'
-    )
+    name = item.get("name") or record.get("name") or "?"
+    plat = item.get("platform") or record.get("platform")
+    bought_s = format_local_dt(record.get("bought_at"))
+    unlock_s = format_local_dt(record.get("unlock_at"))
+
+    lines = [
+        "⏰ <b>购买保护期到期 · 可考虑上架</b>",
+        "",
+        f'<b><a href="{url}">{name}</a></b>',
+    ]
+    if plat:
+        lines.append(f"平台：{plat}")
+    lines.append(f"标记购买：{bought_s}")
+    if unlock_s and unlock_s != "—":
+        lines.append(f"预计可交易：{unlock_s}")
+
+    # 仅在本轮抓取命中该饰品时才附行情（否则全是 — 无意义）
+    ratio = item.get("ratio")
+    has_quote = ratio is not None or item.get("platform_price") is not None
+    if has_quote:
+        if ratio is not None:
+            lines.append(f"当前挂刀比例：<b>{ratio:.4f}</b>")
+        ch = item.get("change_7d")
+        if ch is not None:
+            lines.append(f"当前7日涨跌：<b>{fmt_pct(ch)}</b>")
+        if item.get("platform_price") is not None:
+            lines.append(f"平台价：{fmt_money(item.get('platform_price'))}")
+        if item.get("steam_price") is not None:
+            lines.append(f"Steam售价：{fmt_money(item.get('steam_price'))}")
+        if item.get("steam_balance") is not None:
+            lines.append(f"到手余额：{fmt_money(item.get('steam_balance'))}")
+
+    lines.append("")
+    lines.append(f"建议：按 <b>{sale_method}</b> 在 Steam 核对手动上架。")
+    lines.append("（冷却约为 7 天并取整到下一整点，以库存显示为准）")
+    lines.append('<a href="https://smis.club/exchange">打开挂刀行情</a>')
+    return chr(10).join(lines)
+
 
 
 def run():
@@ -1583,6 +1735,13 @@ def run():
             print("[info] 无符合条件商品，跳过推送")
 
     # 仅对「已买」且到期的条目提醒
+    quote_session = None
+    if session_auth and (session_auth.get("headers") or session_auth.get("cookies")):
+        try:
+            quote_session = build_smis_session(session_auth)
+        except Exception as e:
+            print(f"[warn] 构建行情 session 失败: {e}")
+
     for key, record in list(candidates.items()):
         if record.get("status") != "bought":
             continue
@@ -1592,15 +1751,31 @@ def run():
             continue
         if now_utc() < unlock_at:
             continue
-        item = by_key.get(key) or {
-            **record,
-            "ratio": None,
-            "change_7d": None,
-            "platform_price": None,
-            "steam_price": None,
-            "steam_balance": None,
-            "volume": None,
-        }
+        item = by_key.get(key)
+        if not item or item.get("ratio") is None:
+            cid = record.get("commodity_id")
+            quote = fetch_commodity_quote(
+                cid,
+                platform=record.get("platform"),
+                session_auth=session_auth,
+                session=quote_session,
+            )
+            if quote:
+                item = {**(item or {}), **record, **quote}
+                print(
+                    f"[info] 到期补行情 id={cid} ratio={quote.get('ratio')} "
+                    f"7d={quote.get('change_7d')}"
+                )
+            else:
+                item = {
+                    **record,
+                    "ratio": None,
+                    "change_7d": None,
+                    "platform_price": None,
+                    "steam_price": None,
+                    "steam_balance": None,
+                    "volume": None,
+                }
         try:
             telegram_send(token, chat_id, mature_message(item, record, sale_method))
             print(f"[tg] 已推送到期复核: {record.get('name')}")

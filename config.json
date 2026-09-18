@@ -9,18 +9,27 @@
   },
   "filters": {
     "ratio_max": 0.63,
-    "change_7d_min_pct": -10,
+    "change_7d_min_pct": -5,
     "change_7d_max_pct": 5,
-    "volume_min": 80,
+    "volume_min": 40,
     "price_min": 2,
     "price_max": 5000,
     "platforms": [],
-    "update_within_minutes": 10,
-    "near_low_days": 7,
-    "near_low_tolerance_pct": 5,
+    "update_within_minutes": 30,
+    "near_low_days": 0,
+    "near_low_tolerance_pct": 2,
     "near_low_max_check": 30
   },
   "state": {
     "max_records": 3000
+  },
+  "scrape": {
+    "mode": "auth_api",
+    "note": "auth_api=短开浏览器截Auth后关，再API；api=纯API需smis_auth；browser=旧整页"
+  },
+  "smis_auth": {
+    "Auth": "",
+    "Auth2": "",
+    "Cookie": ""
   }
 }
