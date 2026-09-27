@@ -9,15 +9,15 @@
   },
   "filters": {
     "ratio_max": 0.63,
-    "change_7d_min_pct": -5,
-    "change_7d_max_pct": 5,
-    "volume_min": 40,
-    "price_min": 2,
+    "change_7d_min_pct": -8,
+    "change_7d_max_pct": 10,
+    "volume_min": 100,
+    "price_min": 1,
     "price_max": 5000,
     "platforms": [],
-    "update_within_minutes": 30,
-    "near_low_days": 0,
-    "near_low_tolerance_pct": 2,
+    "update_within_minutes": 10,
+    "near_low_days": 3,
+    "near_low_tolerance_pct": 1,
     "near_low_max_check": 30
   },
   "state": {

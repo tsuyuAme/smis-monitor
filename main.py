@@ -11,6 +11,11 @@ SMIS 挂刀监控
   $env:TG_CHAT_ID = "xxx"
   $env:SMIS_HEADED = "1"          # 弹出浏览器窗口
   $env:SMIS_MANUAL_WAIT = "60"    # 有验证码时给你 60 秒手动点
+  # 纯 API（不启动浏览器，需有效 Auth）:
+  $env:SMIS_USE_BROWSER = "0"
+  $env:SMIS_AUTH = "...."
+  $env:SMIS_AUTH2 = "...."
+  $env:SMIS_COOKIE = "_c_WBKFR=...; ..."
   python main.py
 """
 
@@ -32,6 +37,59 @@ CONFIG_FILE = BASE_DIR / "config.json"
 DEBUG_DIR = BASE_DIR / "data" / "debug"
 BROWSER_DIR = BASE_DIR / "browser_data"
 UTC = timezone.utc
+
+class _TimestampStdout:
+    """给每行日志加上本地时间前缀（方便重定向到文件时区分轮次）。"""
+
+    def __init__(self, stream):
+        self._stream = stream
+        self._buf = ""
+
+    def write(self, s):
+        if not s:
+            return 0
+        self._buf += s
+        while "\n" in self._buf:
+            line, self._buf = self._buf.split("\n", 1)
+            if line.strip() == "":
+                self._stream.write("\n")
+            else:
+                try:
+                    from zoneinfo import ZoneInfo
+                    ts = datetime.now(ZoneInfo("Asia/Shanghai")).strftime("%Y-%m-%d %H:%M:%S")
+                except Exception:
+                    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                self._stream.write(f"[{ts}] {line}\n")
+        return len(s)
+
+    def flush(self):
+        if self._buf:
+            self.write("\n")
+        self._stream.flush()
+
+    def __getattr__(self, name):
+        return getattr(self._stream, name)
+
+
+def install_timestamp_logging():
+    if getattr(sys.stdout, "_smis_ts", False):
+        return
+    wrapper = _TimestampStdout(sys.stdout)
+    wrapper._smis_ts = True
+    sys.stdout = wrapper
+    sys.stderr = _TimestampStdout(sys.stderr)
+
+
+def print_run_banner():
+    try:
+        from zoneinfo import ZoneInfo
+        ts = datetime.now(ZoneInfo("Asia/Shanghai")).strftime("%Y-%m-%d %H:%M:%S")
+    except Exception:
+        ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    line = "=" * 56
+    print(line)
+    print(f"SMIS monitor 本轮开始  {ts}")
+    print(line)
 
 
 def now_utc():
@@ -367,8 +425,322 @@ def change_7d_bounds(filters):
 
 
 
+
+def load_session_auth(config=None):
+    """
+    从环境变量 / config / data/smis_auth.json 读取 Auth，无需浏览器。
+    优先级：环境变量 > config.smis_auth > 文件。
+    """
+    config = config or {}
+    headers = {}
+    cookie = None
+
+    # 文件
+    auth_file = BASE_DIR / "data" / "smis_auth.json"
+    file_obj = {}
+    if auth_file.exists():
+        try:
+            file_obj = json.loads(auth_file.read_text("utf-8"))
+        except Exception:
+            file_obj = {}
+
+    cfg_auth = config.get("smis_auth") or file_obj or {}
+    if not isinstance(cfg_auth, dict):
+        cfg_auth = {}
+
+    auth = os.getenv("SMIS_AUTH") or cfg_auth.get("Auth") or cfg_auth.get("auth")
+    auth2 = os.getenv("SMIS_AUTH2") or cfg_auth.get("Auth2") or cfg_auth.get("auth2")
+    cookie = os.getenv("SMIS_COOKIE") or cfg_auth.get("Cookie") or cfg_auth.get("cookie")
+
+    if auth:
+        headers["Auth"] = str(auth).strip()
+    if auth2:
+        headers["Auth2"] = str(auth2).strip()
+
+    cookies = []
+    if cookie:
+        for part in str(cookie).split(";"):
+            part = part.strip()
+            if not part or "=" not in part:
+                continue
+            n, v = part.split("=", 1)
+            cookies.append(
+                {"name": n.strip(), "value": v.strip(), "domain": ".smis.club", "path": "/"}
+            )
+
+    return {"headers": headers, "cookies": cookies, "local_storage": {}}
+
+
+def build_exchange_request_body(filters):
+    """按站点真实入参构造 /api/commodity/exchange body。"""
+    filters = filters or {}
+    ch_lo, ch_hi = change_7d_bounds(filters)
+    # 页面里周涨跌是小数比例：-0.1 = -10%
+    min_week = float(ch_lo) / 100.0
+    max_week = float(ch_hi) / 100.0
+    ratio_max = float(filters.get("ratio_max", 0.70))
+    volume_min = int(filters.get("volume_min", 50) or 50)
+    price_min = filters.get("price_min", 1)
+    price_max = filters.get("price_max", 5000)
+
+    plats = filters.get("platforms") or []
+    if plats:
+        platforms = [str(x).lower() for x in plats]
+    else:
+        platforms = ["buff", "uuyp", "c5", "igxe", "eco"]
+
+    # 更新时间：timeAfter = 现在(北京时间) - update_within_minutes
+    time_after = None
+    within = filters.get("update_within_minutes")
+    if within is not None and str(within).strip() != "":
+        try:
+            from zoneinfo import ZoneInfo
+            now_sh = datetime.now(ZoneInfo("Asia/Shanghai"))
+            ta = now_sh - timedelta(minutes=float(within))
+            time_after = ta.strftime("%Y-%m-%d %H:%M:%S")
+        except Exception:
+            ta = now_utc() + timedelta(hours=8) - timedelta(minutes=float(within))
+            time_after = ta.strftime("%Y-%m-%d %H:%M:%S")
+
+    body = {
+        "model": 0,
+        "platforms": platforms,
+        "appid": None,
+        "buffLimit": 9999999,
+        "buffTax": 0.015,
+        "c5Limit": 100,
+        "c5Tax": 0.01,
+        "ecoLimit": 9999999,
+        "ecoTax": 0,
+        "igxeLimit": 9999999,
+        "igxeTax": 0.006,
+        "uuypLimit": 9999999,
+        "uuypTax": 0.01,
+        "minPrice": str(price_min),
+        "maxPrice": float(price_max) if price_max is not None else 5000,
+        "minRate": 0,
+        "maxRate": str(ratio_max),
+        "minTransactionQuantity": str(volume_min),
+        "minWeekGrowthRate": min_week,
+        "maxWeekGrowthRate": max_week,
+        "minSteamSellSubBuyRatio": 0.3,
+        "pageNum": 1,
+        "pageSize": 50,
+    }
+    if time_after:
+        body["timeAfter"] = time_after
+    return body
+
+
+
+def capture_auth_briefly(config):
+    """
+    短暂打开浏览器 → 访问挂刀页 → 截获 Auth/Auth2 → 立刻关闭。
+    不填筛选、不点应用，尽量少占内存。
+    """
+    warnings = []
+    url = config.get("site", {}).get("url", "https://smis.club/exchange")
+    captured = {}
+    chrome_args = [
+        "--disable-dev-shm-usage",
+        "--no-sandbox",
+        "--disable-gpu",
+        "--disable-extensions",
+        "--disable-background-networking",
+        "--disable-software-rasterizer",
+        "--js-flags=--max-old-space-size=64",
+        "--single-process",
+    ]
+    # single-process 在部分环境不稳，失败再降级
+    headed = os.getenv("SMIS_HEADED", "").strip() in {"1", "true", "True", "yes", "YES"}
+    browser = None
+    context = None
+    try:
+        with sync_playwright() as p:
+            try:
+                browser = p.chromium.launch(headless=not headed, args=chrome_args)
+            except Exception:
+                chrome_args = [a for a in chrome_args if a != "--single-process"]
+                browser = p.chromium.launch(headless=not headed, args=chrome_args)
+            context = browser.new_context(
+                viewport={"width": 900, "height": 700},
+                locale="zh-CN",
+                timezone_id="Asia/Shanghai",
+                user_agent=(
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/122.0.0.0 Safari/537.36"
+                ),
+            )
+            page = context.new_page()
+
+            def on_request(req):
+                try:
+                    u = req.url or ""
+                    if "smis.club" not in u or "/api/" not in u:
+                        return
+                    h = req.headers or {}
+                    for src, dst in (
+                        ("auth", "Auth"),
+                        ("auth2", "Auth2"),
+                        ("authorization", "Authorization"),
+                    ):
+                        val = h.get(src) or h.get(dst)
+                        if val:
+                            captured[dst] = val
+                except Exception:
+                    pass
+
+            page.on("request", on_request)
+            print(f"[info] 仅截获 Auth：打开 {url}")
+            page.goto(url, wait_until="domcontentloaded", timeout=60000)
+            # 等列表接口发出
+            for _ in range(40):
+                if captured.get("Auth") and captured.get("Auth2"):
+                    break
+                page.wait_for_timeout(500)
+            try:
+                page.wait_for_load_state("networkidle", timeout=8000)
+            except Exception:
+                pass
+            # 再给一点时间让 exchange 请求发出
+            page.wait_for_timeout(1500)
+
+            cookies = []
+            try:
+                cookies = context.cookies()
+            except Exception:
+                pass
+
+            try:
+                context.close()
+            except Exception:
+                pass
+            try:
+                browser.close()
+            except Exception:
+                pass
+            browser = None
+            context = None
+
+        if captured.get("Auth"):
+            print("[info] 已截获 Auth 头: " + ", ".join(sorted(captured.keys())))
+        else:
+            msg = "未能截获 Auth，API 可能 401"
+            print(f"[warn] {msg}")
+            warnings.append(msg)
+
+        return {
+            "headers": dict(captured),
+            "cookies": cookies,
+            "local_storage": {},
+        }, warnings
+    except Exception as e:
+        warnings.append(f"截获 Auth 失败: {e}")
+        print(f"[error] 截获 Auth 失败: {e}")
+        try:
+            if context:
+                context.close()
+        except Exception:
+            pass
+        try:
+            if browser:
+                browser.close()
+        except Exception:
+            pass
+        return {"headers": {}, "cookies": [], "local_storage": {}}, warnings
+
+
+def scrape_exchange_api(config, session_auth=None):
+    """纯 API 拉挂刀列表，不启动浏览器。"""
+    warnings = []
+    session_auth = session_auth or load_session_auth(config)
+    if not (session_auth.get("headers") or {}).get("Auth"):
+        warnings.append("纯 API 模式需要 Auth（环境变量 SMIS_AUTH 或 data/smis_auth.json）")
+        return [], warnings, session_auth
+
+    filters = config.get("filters", {})
+    sess = build_smis_session(session_auth)
+    bodies = [
+        build_exchange_request_body(filters),
+    ]
+    got = []
+    last_err = None
+    for body in bodies:
+        try:
+            print(f"[info] API 请求 /api/commodity/exchange body_keys={list(body.keys()) or '{}'}")
+            r = sess.post(
+                "https://smis.club/api/commodity/exchange",
+                json=body,
+                headers={"Referer": "https://smis.club/exchange"},
+                timeout=30,
+            )
+            if r.status_code == 401:
+                warnings.append("exchange API 401：Auth 可能过期，请从浏览器更新")
+                print("[warn] exchange API 401")
+                return [], warnings, session_auth
+            r.raise_for_status()
+            payload = r.json()
+            part = items_from_api_payload(payload)
+            print(f"[info] API 返回解析 {len(part)} 条")
+            if part:
+                got = part
+                break
+        except Exception as e:
+            last_err = e
+            print(f"[warn] API 请求失败: {e}")
+            warnings.append(f"API 请求失败: {e}")
+
+    if not got and last_err:
+        warnings.append(str(last_err))
+    return got, warnings, session_auth
+
+
 def scrape_exchange(config):
-    """低配 VPS 优化：仍完整走「填筛选 → 应用设置 → 用应用后的接口数据」。"""
+
+    """
+    默认：短暂开浏览器只截获 Auth → 关闭 → 用真实入参调 exchange API。
+    scrape.mode:
+      auth_api  — 推荐（截获 Auth + API）
+      api       — 纯 API（需 config/环境变量里已有 Auth）
+      browser   — 旧版整页填筛选（吃内存，不推荐）
+    """
+    scrape_cfg = config.get("scrape") or {}
+    mode = str(scrape_cfg.get("mode") or "").strip().lower()
+    env_b = os.getenv("SMIS_USE_BROWSER", "").strip().lower()
+    if not mode:
+        if env_b in {"0", "false", "no", "api"}:
+            mode = "api"
+        elif env_b in {"1", "true", "yes", "browser"}:
+            mode = "browser"
+        elif scrape_cfg.get("use_browser") is False:
+            mode = "api"
+        else:
+            mode = "auth_api"
+
+    if mode in {"api", "auth_api"}:
+        session_auth = load_session_auth(config)
+        warnings = []
+        if mode == "auth_api" or not (session_auth.get("headers") or {}).get("Auth"):
+            print("[info] 模式=auth_api：短暂打开浏览器截获 Auth")
+            captured, w = capture_auth_briefly(config)
+            warnings.extend(w)
+            # 合并：截获优先
+            if captured.get("headers"):
+                session_auth["headers"] = {
+                    **(session_auth.get("headers") or {}),
+                    **captured["headers"],
+                }
+            if captured.get("cookies"):
+                session_auth["cookies"] = captured["cookies"]
+        else:
+            print("[info] 模式=api：使用已配置的 Auth，不启动浏览器")
+        rows, w2, session_auth = scrape_exchange_api(config, session_auth=session_auth)
+        warnings.extend(w2)
+        return rows, warnings, session_auth
+
+    print("[info] 模式=browser：完整页面填筛选（较吃内存）")
+
     url = config.get("site", {}).get("url", "https://smis.club/exchange")
     wait_ms = int(config.get("site", {}).get("wait_ms", 8000))
     filters = config.get("filters", {})
@@ -1553,6 +1925,8 @@ def mature_message(item, record, sale_method):
 
 
 def run():
+    install_timestamp_logging()
+    print_run_banner()
     config = get_config()
     token = os.getenv("TG_BOT_TOKEN")
     chat_id = os.getenv("TG_CHAT_ID")
@@ -1808,6 +2182,7 @@ def run():
 
 
 if __name__ == "__main__":
+    install_timestamp_logging()
     try:
         run()
     except Exception as e:
